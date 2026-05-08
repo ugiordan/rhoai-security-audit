@@ -187,16 +187,127 @@ def parse_gosec(path):
     return findings
 
 
+def parse_trufflehog(path):
+    data = json.loads(path.read_text())
+    if not isinstance(data, list):
+        return []
+    findings = []
+    for i, r in enumerate(data, 1):
+        meta = r.get("SourceMetadata", {}).get("Data", {}).get("Filesystem", {})
+        findings.append({
+            "id": make_id("trufflehog", i), "source": "trufflehog",
+            "severity": "high", "category": "secrets",
+            "file": meta.get("file", ""), "line_start": meta.get("line", 0),
+            "line_end": meta.get("line", 0),
+            "title": f"Secret: {r.get('DetectorName', 'unknown')}",
+            "description": f"Verified: {r.get('Verified', False)}",
+            "confidence": 0.95 if r.get("Verified") else 0.6,
+            "rule_id": r.get("DetectorName", ""),
+            "detected_by": ["trufflehog"], "recommendation": "Remove secret and rotate credentials",
+        })
+    return findings
+
+
+def parse_govulncheck(path):
+    data = json.loads(path.read_text())
+    if not isinstance(data, list):
+        return []
+    findings = []
+    n = 0
+    for entry in data:
+        finding = entry.get("finding", {})
+        if not finding:
+            continue
+        osv_id = finding.get("osv", "")
+        if not osv_id:
+            continue
+        n += 1
+        trace = finding.get("trace", [{}])
+        pkg = trace[0].get("module", "") if trace else ""
+        findings.append({
+            "id": make_id("govulncheck", n), "source": "govulncheck",
+            "severity": "high", "category": "sca",
+            "file": trace[0].get("position", {}).get("filename", "") if trace else "",
+            "line_start": trace[0].get("position", {}).get("line", 0) if trace else 0,
+            "line_end": 0,
+            "title": f"{osv_id}: {pkg}",
+            "description": f"Vulnerability in {pkg}",
+            "confidence": 0.9, "rule_id": osv_id,
+            "detected_by": ["govulncheck"], "recommendation": f"Update {pkg}",
+        })
+    return findings
+
+
+def parse_pip_audit(path):
+    data = json.loads(path.read_text())
+    deps = data.get("dependencies", [])
+    findings = []
+    n = 0
+    for dep in deps:
+        for vuln in dep.get("vulns", []):
+            n += 1
+            findings.append({
+                "id": make_id("pip-audit", n), "source": "pip-audit",
+                "severity": "high", "category": "sca",
+                "file": "requirements.txt", "line_start": 0, "line_end": 0,
+                "title": f"{vuln.get('id', '')}: {dep.get('name', '')} {dep.get('version', '')}",
+                "description": vuln.get("description", "")[:500],
+                "confidence": 0.9, "rule_id": vuln.get("id", ""),
+                "detected_by": ["pip-audit"],
+                "recommendation": f"Update to {vuln.get('fix_versions', ['latest'])[0]}" if vuln.get("fix_versions") else "Update package",
+            })
+    return findings
+
+
+def parse_osv_scanner(path):
+    data = json.loads(path.read_text())
+    findings = []
+    n = 0
+    for result in data.get("results", []):
+        source_path = result.get("source", {}).get("path", "")
+        for pkg in result.get("packages", []):
+            pkg_info = pkg.get("package", {})
+            for v in pkg.get("vulnerabilities", []):
+                n += 1
+                sev = "medium"
+                for s in v.get("severity", []):
+                    score = s.get("score", "")
+                    if isinstance(score, str) and ":" in score:
+                        try:
+                            base = float(score.split("/")[0].split(":")[-1])
+                            if base >= 9.0: sev = "critical"
+                            elif base >= 7.0: sev = "high"
+                            elif base >= 4.0: sev = "medium"
+                            else: sev = "low"
+                        except (ValueError, IndexError):
+                            pass
+                findings.append({
+                    "id": make_id("osv-scanner", n), "source": "osv-scanner",
+                    "severity": sev, "category": "sca",
+                    "file": source_path, "line_start": 0, "line_end": 0,
+                    "title": f"{v.get('id', '')}: {pkg_info.get('name', '')}",
+                    "description": v.get("summary", "")[:500],
+                    "confidence": 0.85, "rule_id": v.get("id", ""),
+                    "detected_by": ["osv-scanner"],
+                    "recommendation": f"Update {pkg_info.get('name', '')}",
+                })
+    return findings
+
+
 PARSERS = {
     "semgrep.json": ("semgrep", parse_semgrep),
-    "gitleaks.json": ("gitleaks", parse_gitleaks),
-    "trivy.json": ("trivy", parse_trivy),
-    "grype.json": ("grype", parse_grype),
+    "gitleaks-report.json": ("gitleaks", parse_gitleaks),
+    "trufflehog-report.json": ("trufflehog", parse_trufflehog),
+    "trivy-report.json": ("trivy", parse_trivy),
+    "grype-report.json": ("grype", parse_grype),
     "kube-linter.json": ("kube-linter", parse_kube_linter),
     "hadolint.sarif": ("hadolint", lambda p: parse_sarif(p, "hadolint")),
     "zizmor.sarif": ("zizmor", lambda p: parse_sarif(p, "zizmor")),
-    "shellcheck.json": ("shellcheck", parse_shellcheck),
-    "gosec.json": ("gosec", parse_gosec),
+    "shellcheck-report.json": ("shellcheck", parse_shellcheck),
+    "gosec-report.json": ("gosec", parse_gosec),
+    "govulncheck-report.json": ("govulncheck", parse_govulncheck),
+    "pip-audit-report.json": ("pip-audit", parse_pip_audit),
+    "osv-scanner-report.json": ("osv-scanner", parse_osv_scanner),
 }
 
 

@@ -25,13 +25,23 @@ def add_entry(metadata_path, trends_path):
         print(f"Skipped: {repo}@{commit} already in trends", file=sys.stderr)
         return
 
+    findings = meta.get("findings", {})
+    severity = {
+        "critical": findings.get("critical", 0),
+        "high": findings.get("high", 0),
+        "medium": findings.get("medium", 0),
+        "low": findings.get("low", 0),
+        "info": findings.get("info", 0),
+    }
+    total = findings.get("total_deduped", findings.get("total_raw", sum(severity.values())))
+
     entry = {
         "date": meta.get("date", datetime.now(timezone.utc).isoformat()),
         "repo": repo,
         "branch": meta.get("branch", "main"),
         "commit": commit,
-        "severity": meta.get("severity_counts", {}),
-        "total": meta.get("total_findings", 0),
+        "severity": severity,
+        "total": total,
         "tools_run": meta.get("tools_run", []),
     }
     trends.append(entry)
