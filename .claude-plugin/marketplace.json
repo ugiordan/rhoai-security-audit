@@ -4,7 +4,6 @@
     "name": "Ugo Giordano",
     "email": "ugiordan@redhat.com"
   },
-  "allowCrossMarketplaceDependenciesOn": ["ugiordan-adversarial-reviewing", "rhoai"],
   "plugins": [
     {
       "name": "rhoai-security-audit",
@@ -12,6 +11,22 @@
       "description": "Security audit: SAST tools + AI skills, consolidated reports, trend tracking",
       "version": "1.1.0",
       "author": { "name": "Ugo Giordano" }
+    },
+    {
+      "name": "adversarial-reviewing",
+      "source": {
+        "source": "github",
+        "repo": "ugiordan/adversarial-reviewing"
+      },
+      "description": "Multi-agent adversarial code review with debate protocol"
+    },
+    {
+      "name": "rhoai-security-scanner",
+      "source": {
+        "source": "github",
+        "repo": "ugiordan/rhoai-semantic-scan"
+      },
+      "description": "3-agent semantic security analysis (repo-analyst, security-scanner, post-scan-agent)"
     }
   ]
 }
