@@ -4,7 +4,7 @@
     "name": "Ugo Giordano",
     "email": "ugiordan@redhat.com"
   },
-  "allowCrossMarketplaceDependenciesOn": ["ugiordan-adversarial-reviewing"],
+  "allowCrossMarketplaceDependenciesOn": ["ugiordan-adversarial-reviewing", "rhoai"],
   "plugins": [
     {
       "name": "rhoai-security-audit",

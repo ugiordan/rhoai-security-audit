@@ -92,7 +92,9 @@ telemetry.json.
 hadolint, actionlint, zizmor, shellcheck, trivy, grype, govulncheck,
 pip-audit, osv-scanner, gosec, yamllint
 
-**AI Skills** (native invocation): adversarial-reviewing, semantic-scan
+**AI Skills** (auto-installed as dependencies, invoked natively):
+- adversarial-reviewing: 5 specialist agents (SEC, PERF, QUAL, CORR, ARCH) + red team + debate
+- rhoai-security-scanner: 3 agents (repo-analyst, security-scanner, post-scan-agent)
 
 ## Normalization
 

@@ -105,9 +105,36 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/session_log.py agent \
   --findings-count <count>
 ```
 
-### semantic-scan (future)
+### semantic-scan (rhoai-security-scanner)
 
-When the rhoai-semantic-scan plugin is available, invoke it similarly.
+The rhoai-security-scanner plugin (Matthew's semantic scanner) is
+auto-installed as a dependency. It uses 3 agents: repo-analyst,
+security-scanner, post-scan-agent.
+
+Invoke it against the repo:
+
+```
+Skill(skill="rhoai-security-scanner:audit", args="${REPO}")
+```
+
+After it completes, copy its outputs:
+
+```bash
+mkdir -p "${OUTPUT_DIR}/raw/semantic-scan"
+# Copy any output files the scanner produced
+find /tmp -maxdepth 3 -name "*.json" -path "*rhoai-security-scanner*" \
+  -exec cp {} "${OUTPUT_DIR}/raw/semantic-scan/" \; 2>/dev/null || true
+```
+
+Log the agent dispatch:
+```bash
+python3 ${CLAUDE_SKILL_DIR}/scripts/session_log.py agent \
+  --session-file "${SESSION_FILE}" \
+  --name "semantic-scan" --phase "full-scan" \
+  --output-file "${OUTPUT_DIR}/raw/semantic-scan/" \
+  --model "<model-used>" --duration <seconds> \
+  --findings-count <count>
+```
 
 **Important**: Log every agent dispatch, including the model used,
 duration, and reasoning. This creates a full audit trail.
