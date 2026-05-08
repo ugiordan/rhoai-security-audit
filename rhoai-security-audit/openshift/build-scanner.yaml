@@ -1,0 +1,22 @@
+apiVersion: build.openshift.io/v1
+kind: BuildConfig
+metadata:
+  name: security-audit-scanner
+  namespace: rhoai-security
+spec:
+  output:
+    to:
+      kind: DockerImage
+      name: quay.io/ugiordan/security-audit-scanner:latest
+    pushSecret:
+      name: quay-push-secret
+  source:
+    type: Binary
+  strategy:
+    type: Docker
+    dockerStrategy:
+      dockerfilePath: Dockerfile.scanner
+  resources:
+    limits:
+      memory: 4Gi
+      cpu: "2"
