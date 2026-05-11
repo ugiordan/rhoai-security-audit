@@ -151,18 +151,24 @@ Create scan-metadata.json with all run details:
 - ai_skills_run
 - finding counts by severity (from deduplicated findings)
 
-## Step 7: Generate report
+## Step 7: Generate reports
+
+Generate both markdown and HTML reports:
 
 ```bash
 python3 "${CLAUDE_SKILL_DIR}/scripts/report.py" "${OUTPUT_DIR}" \
   > "${OUTPUT_DIR}/executive-report.md"
+
+python3 "${CLAUDE_SKILL_DIR}/scripts/report_html.py" "${OUTPUT_DIR}" \
+  > "${OUTPUT_DIR}/security-report.html"
 ```
 
 If `--ai-prioritize` flag is set, review the critical/high findings
 and rank by actual exploitability before generating the report.
 Log your reasoning for each prioritization decision.
 
-Present the executive report to the user.
+Present the executive report to the user and mention the HTML report
+is available for browser viewing.
 
 ## Step 8: Update trends
 
