@@ -47,7 +47,10 @@ RUN case "${TARGETARCH:-amd64}" in \
 
 # Python tools
 ENV PIP_DEFAULT_TIMEOUT=300
-RUN pip install --no-cache-dir semgrep yamllint pip-audit zizmor
+RUN pip install --no-cache-dir yamllint pip-audit zizmor
+
+# semgrep: use the standalone installer that bundles semgrep-core
+RUN curl -sSfL https://semgrep.dev/static/install-semgrep.sh | bash -s -- --prefix /usr/local
 
 # hadolint
 RUN case "${TARGETARCH:-amd64}" in \
