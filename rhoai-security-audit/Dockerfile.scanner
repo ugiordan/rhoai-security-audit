@@ -106,14 +106,25 @@ RUN case "${TARGETARCH:-amd64}" in \
       "https://github.com/rhysd/actionlint/releases/download/v1.7.8/actionlint_1.7.8_linux_${AL_ARCH}.tar.gz" \
     && tar -xzf /tmp/al.tar.gz -C /usr/local/bin/ actionlint && rm /tmp/al.tar.gz
 
-# Copy scan and normalize scripts
-COPY skills/security-audit/scripts/run_all.sh /scanner/run_all.sh
+# Pull scan-repo.sh and tuned configs from rhoai-security-scanner repo.
+# This is the battle-tested script with all tool exclusions and custom rules.
+RUN curl -sSfL -o /scanner/scan-repo.sh \
+      "https://raw.githubusercontent.com/ugiordan/rhoai-security-scanner/main/scripts/scan-repo.sh" \
+    && chmod +x /scanner/scan-repo.sh \
+    && mkdir -p /scanner/configs \
+    && cd /tmp \
+    && curl -sSfL -o scanner-configs.tar.gz \
+      "https://api.github.com/repos/ugiordan/rhoai-security-scanner/tarball/main" \
+    && tar -xzf scanner-configs.tar.gz --strip-components=1 --wildcards '*/configs/*' \
+    && cp -R configs/* /scanner/configs/ \
+    && rm -rf scanner-configs.tar.gz configs
+
+# Copy normalize/dedup scripts from the skill
 COPY skills/security-audit/scripts/normalize.py /scanner/normalize.py
 COPY skills/security-audit/scripts/dedup.py /scanner/dedup.py
-RUN chmod +x /scanner/run_all.sh
 
 RUN mkdir -p /scanner/repos /scanner/results && chown -R 1001:0 /scanner
 USER 1001
 ENV HOME=/tmp
 
-ENTRYPOINT ["/scanner/run_all.sh"]
+ENTRYPOINT ["/scanner/scripts/scan-repo.sh"]
