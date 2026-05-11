@@ -153,11 +153,14 @@ Create scan-metadata.json with all run details:
 
 ## Step 7: Generate reports
 
-Generate both markdown and HTML reports:
+Generate all three report formats:
 
 ```bash
 python3 "${CLAUDE_SKILL_DIR}/scripts/report.py" "${OUTPUT_DIR}" \
   > "${OUTPUT_DIR}/executive-report.md"
+
+python3 "${CLAUDE_SKILL_DIR}/scripts/report_mustfix.py" "${OUTPUT_DIR}" \
+  > "${OUTPUT_DIR}/must-fix-report.md"
 
 python3 "${CLAUDE_SKILL_DIR}/scripts/report_html.py" "${OUTPUT_DIR}" \
   > "${OUTPUT_DIR}/security-report.html"

@@ -37,6 +37,7 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/scan_container.sh <repo> <branch> <results-d
 python3 ${CLAUDE_SKILL_DIR}/scripts/normalize.py <results-dir>
 python3 ${CLAUDE_SKILL_DIR}/scripts/dedup.py <normalized.json>
 python3 ${CLAUDE_SKILL_DIR}/scripts/report.py <output-dir> [--full]
+python3 ${CLAUDE_SKILL_DIR}/scripts/report_mustfix.py <output-dir> [--min-severity high]
 python3 ${CLAUDE_SKILL_DIR}/scripts/report_html.py <output-dir> > report.html
 python3 ${CLAUDE_SKILL_DIR}/scripts/trends.py --show --trends-file <file>
 python3 ${CLAUDE_SKILL_DIR}/scripts/session_log.py init|step|agent|finalize
