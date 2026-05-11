@@ -24,7 +24,10 @@ SAST + AI security analysis with consolidated reporting.
 Read [workflows/audit.md](workflows/audit.md) for the full pipeline:
 1. SAST container + AI skills run **in parallel**
 2. Normalize + deduplicate across all tools
-3. Generate markdown + HTML reports
+3. **Generate ALL THREE reports** (always, every run):
+   - `executive-report.md` (tool matrix, CVE section, category breakdown)
+   - `must-fix-report.md` (ProdSec format: Fix N with risk, files, effort)
+   - `security-report.html` (dark theme, charts, clickable GitHub links)
 4. Update trend tracking
 5. Write session transcript (model reasoning log)
 
