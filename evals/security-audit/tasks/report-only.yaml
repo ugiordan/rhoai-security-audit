@@ -1,0 +1,16 @@
+name: report-from-existing
+description: Generate report from existing scan data without running a new scan
+prompt: |
+  /rhoai-security-audit:security-audit report --full
+expected_behavior:
+  - Finds existing scan data in output/ directory
+  - Generates executive-report.md with all severities (not just critical/high)
+  - Generates security-report.html
+  - Does NOT clone any repos or run SAST tools
+graders:
+  - type: regex
+    name: full_report_sections
+    config:
+      patterns:
+        - "Medium Findings"
+        - "Info Findings"

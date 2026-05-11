@@ -1,0 +1,21 @@
+name: scan-small-repo
+description: Scan a small Go repo and verify full pipeline output
+prompt: |
+  /rhoai-security-audit:security-audit opendatahub-io/kube-auth-proxy --skip-ai
+expected_behavior:
+  - Clones opendatahub-io/kube-auth-proxy
+  - Runs SAST tools (semgrep, gitleaks, shellcheck, hadolint at minimum)
+  - Normalizes all tool outputs to common JSON format
+  - Deduplicates findings across tools
+  - Generates executive-report.md with Executive Summary, Tool Coverage, and findings tables
+  - Generates security-report.html
+  - Updates security-trends.json
+  - Writes session-log.json and session-transcript.md
+graders:
+  - type: file
+    name: output_files
+    config:
+      paths:
+        - "output/kube-auth-proxy/*/executive-report.md"
+        - "output/kube-auth-proxy/*/security-report.html"
+        - "output/kube-auth-proxy/*/deduplicated-findings.json"

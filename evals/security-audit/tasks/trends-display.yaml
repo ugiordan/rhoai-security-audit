@@ -1,0 +1,20 @@
+name: trends-display
+description: Show trends from previous scan runs
+prompt: |
+  /rhoai-security-audit:security-audit trends --last 5
+expected_behavior:
+  - Reads security-trends.json
+  - Displays markdown table with Date, Repo, Branch, Commit, severity counts
+  - Shows delta column (improvement/regression arrows)
+  - Does NOT run any scans
+graders:
+  - type: keyword
+    name: trends_table
+    config:
+      keywords:
+        - "Date"
+        - "Repo"
+        - "Critical"
+        - "High"
+        - "Total"
+        - "Delta"

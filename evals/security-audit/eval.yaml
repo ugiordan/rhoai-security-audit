@@ -1,0 +1,58 @@
+name: security-audit-eval
+description: Evaluation suite for rhoai-security-audit skill. Tests SAST scanning, normalization, deduplication, report generation, and trend tracking.
+skill: security-audit
+version: "1.0"
+config:
+  trials_per_task: 1
+  timeout_seconds: 600
+  parallel: false
+  executor: copilot-sdk
+  model: claude-sonnet-4.6
+metrics:
+  - name: sast_coverage
+    weight: 0.3
+    threshold: 0.7
+    description: Did all available SAST tools produce output?
+  - name: report_quality
+    weight: 0.3
+    threshold: 0.8
+    description: Does the report contain required sections?
+  - name: normalization_accuracy
+    weight: 0.2
+    threshold: 0.9
+    description: Are findings normalized to common schema?
+  - name: dedup_effectiveness
+    weight: 0.1
+    threshold: 0.5
+    description: Were duplicate findings merged?
+  - name: session_logging
+    weight: 0.1
+    threshold: 0.8
+    description: Is the session transcript complete?
+graders:
+  - type: file
+    name: report_files_exist
+    config:
+      paths:
+        - "output/*/202*-*/executive-report.md"
+        - "output/*/202*-*/security-report.html"
+        - "output/*/202*-*/normalized-findings.json"
+        - "output/*/202*-*/deduplicated-findings.json"
+        - "output/*/202*-*/session-log.json"
+        - "output/*/202*-*/session-transcript.md"
+  - type: regex
+    name: report_sections
+    config:
+      patterns:
+        - "Executive Summary"
+        - "Tool Coverage"
+        - "Recommendations"
+  - type: keyword
+    name: report_keywords
+    config:
+      keywords:
+        - "critical"
+        - "high"
+        - "semgrep"
+tasks:
+  - "tasks/*.yaml"
