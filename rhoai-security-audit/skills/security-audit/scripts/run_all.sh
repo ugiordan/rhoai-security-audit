@@ -14,7 +14,8 @@ mkdir -p "${RESULTS_DIR}"
 echo "=== Scanning ${REPO} (branch: ${BRANCH}) ==="
 START_TIME=$(date +%s)
 
-# Clone
+# Clone (clean up any leftover from previous run)
+rm -rf "${WORKDIR}"
 if ! git clone --depth 1 --branch "${BRANCH}" "https://github.com/${REPO}.git" "${WORKDIR}" 2>/dev/null; then
   # Branch might not exist, try without --branch
   git clone --depth 1 "https://github.com/${REPO}.git" "${WORKDIR}" 2>/dev/null || {
@@ -26,12 +27,15 @@ fi
 COMMIT_SHA=$(git -C "${WORKDIR}" rev-parse HEAD 2>/dev/null || echo "unknown")
 TOOLS_RAN=()
 TOOLS_FAILED=()
-declare -A TOOL_COUNTS
+TOOL_COUNTS_LOG=""
 
 run_tool() {
   local name="$1" cmd="$2" output="$3" empty_default="${4:-}"
   echo "--- ${name} ---"
-  if eval "timeout 600 ${cmd}" 2>/dev/null; then
+  TIMEOUT_CMD="timeout"
+  command -v timeout &>/dev/null || TIMEOUT_CMD="gtimeout"
+  command -v $TIMEOUT_CMD &>/dev/null || TIMEOUT_CMD=""
+  if eval "${TIMEOUT_CMD:+$TIMEOUT_CMD 600} ${cmd}" 2>/dev/null; then
     TOOLS_RAN+=("${name}")
   else
     TOOLS_RAN+=("${name}")
@@ -56,7 +60,7 @@ try:
     else: print(0)
 except: print(0)
 " 2>/dev/null || echo 0)
-    TOOL_COUNTS["${name}"]="${count}"
+    TOOL_COUNTS_LOG="${TOOL_COUNTS_LOG}${name}:${count},"
     echo "  ${count} findings"
   fi
 }
@@ -89,7 +93,7 @@ if [ -n "${SHELL_FILES}" ]; then
 else
   echo '[]' > "${RESULTS_DIR}/shellcheck-report.json"
   TOOLS_RAN+=("shellcheck")
-  TOOL_COUNTS["shellcheck"]=0
+  TOOL_COUNTS_LOG="${TOOL_COUNTS_LOG}shellcheck:0,"
 fi
 
 # --- hadolint ---
@@ -102,7 +106,7 @@ if [ -n "${DOCKERFILES}" ]; then
 else
   echo '{"runs":[]}' > "${RESULTS_DIR}/hadolint.sarif"
   TOOLS_RAN+=("hadolint")
-  TOOL_COUNTS["hadolint"]=0
+  TOOL_COUNTS_LOG="${TOOL_COUNTS_LOG}hadolint:0,"
 fi
 
 # --- trivy ---
@@ -126,7 +130,7 @@ if [ -d "${WORKDIR}/config" ]; then
 else
   echo '{"Reports":[]}' > "${RESULTS_DIR}/kube-linter.json"
   TOOLS_RAN+=("kube-linter")
-  TOOL_COUNTS["kube-linter"]=0
+  TOOL_COUNTS_LOG="${TOOL_COUNTS_LOG}kube-linter:0,"
 fi
 
 # --- actionlint ---
