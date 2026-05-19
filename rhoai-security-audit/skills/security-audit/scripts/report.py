@@ -65,7 +65,152 @@ def _severity_badge(sev):
     return icons.get(sev, "")
 
 
-def generate_single_report(findings, metadata, full=False):
+_NON_ESSENTIAL_PKG_PATTERNS = {
+    "multimedia": {"ffmpeg", "libav", "libtheora", "libvorbis", "libvpx", "x264", "x265", "opus", "lame"},
+    "desktop": {"gtk", "cairo", "pango", "gdk-pixbuf", "libX11", "libxcb", "mesa", "wayland"},
+    "debug": {"gdb", "strace", "ltrace", "valgrind"},
+}
+
+
+def _load_image_results(scan_dir):
+    """Look for grype-image-report.json in the scan directory or a sibling image-results dir."""
+    if not scan_dir:
+        return None
+    p = Path(scan_dir)
+    candidates = [
+        p / "grype-image-report.json",
+        p / "image-results" / "grype-image-report.json",
+    ]
+    for parent in [p.parent, p.parent.parent]:
+        for child in parent.iterdir() if parent.exists() else []:
+            if child.is_dir():
+                candidates.append(child / "grype-image-report.json")
+    for f in candidates:
+        if f.exists():
+            try:
+                data = json.loads(f.read_text())
+                if "matches" in data:
+                    return data
+            except (json.JSONDecodeError, OSError):
+                pass
+    return None
+
+
+def _generate_image_health_section(scan_dir, metadata):
+    """Generate a Container Image Health section from grype-image results."""
+    import math
+
+    data = _load_image_results(scan_dir)
+    if not data:
+        return ""
+
+    matches = data.get("matches", [])
+    if not matches:
+        return ""
+
+    # Extract packages and CVEs
+    pkgs = defaultdict(lambda: {"cves": set(), "sevs": Counter(), "fixable": set()})
+    sev_counts = Counter()
+    for m in matches:
+        vuln = m.get("vulnerability", {})
+        artifact = m.get("artifact", {})
+        cve = vuln.get("id", "")
+        sev = vuln.get("severity", "Unknown").lower()
+        pkg_name = artifact.get("name", "")
+        pkg_ver = artifact.get("version", "")
+        if not pkg_name:
+            continue
+        key = f"{pkg_name}@{pkg_ver}"
+        pkgs[key]["cves"].add(cve)
+        pkgs[key]["sevs"][sev] += 1
+        pkgs[key]["name"] = pkg_name
+        pkgs[key]["version"] = pkg_ver
+        pkgs[key]["type"] = artifact.get("type", "")
+        sev_counts[sev] += 1
+        fix = vuln.get("fix", {})
+        if fix.get("versions"):
+            pkgs[key]["fixable"].add(cve)
+
+    total_cves = len(set(cve for p in pkgs.values() for cve in p["cves"]))
+    critical = sev_counts.get("critical", 0)
+    high = sev_counts.get("high", 0)
+
+    # Health score (same formula as dashboard)
+    if critical + high == 0:
+        health = 100
+    else:
+        weighted = critical * 8 + high * 2
+        health = max(0, min(100, round(100 * math.exp(-weighted / 50))))
+
+    # Find non-essential packages
+    hardening_recs = []
+    for key, pkg in pkgs.items():
+        name_lower = pkg["name"].lower()
+        for category, patterns in _NON_ESSENTIAL_PKG_PATTERNS.items():
+            if any(p in name_lower for p in patterns):
+                hardening_recs.append({
+                    "package": pkg["name"],
+                    "version": pkg["version"],
+                    "category": category,
+                    "cve_count": len(pkg["cves"]),
+                })
+                break
+
+    hardening_recs.sort(key=lambda r: -r["cve_count"])
+
+    lines = []
+    lines.append("## Container Image Health")
+    lines.append("")
+
+    repo = metadata.get("repo", "")
+    image_name = repo.split("/")[-1] if "/" in repo else repo
+    health_label = "Good" if health >= 80 else "Moderate" if health >= 50 else "Poor"
+
+    lines.append(f"**Image:** {image_name}  ")
+    lines.append(f"**Health Score:** {health}/100 ({health_label})  ")
+    lines.append(f"**Total CVEs:** {total_cves}  ")
+    lines.append(f"**Unique Packages:** {len(pkgs)}  ")
+    lines.append("")
+
+    lines.append("| Severity | Count |")
+    lines.append("|----------|-------|")
+    for sev in ["critical", "high", "medium", "low"]:
+        c = sev_counts.get(sev, 0)
+        if c > 0:
+            lines.append(f"| {sev} | {c} |")
+    lines.append("")
+
+    # Top vulnerable packages
+    top_pkgs = sorted(pkgs.values(), key=lambda p: -len(p["cves"]))[:10]
+    if top_pkgs:
+        lines.append("### Top Vulnerable Packages")
+        lines.append("")
+        lines.append("| Package | Version | Type | CVEs | Fixable |")
+        lines.append("|---------|---------|------|------|---------|")
+        for p in top_pkgs:
+            lines.append(f"| {p['name']} | {p['version']} | {p['type']} | "
+                         f"{len(p['cves'])} | {len(p['fixable'])} |")
+        lines.append("")
+
+    # Hardening recommendations
+    if hardening_recs:
+        removable_cves = sum(r["cve_count"] for r in hardening_recs)
+        lines.append("### Hardening Recommendations")
+        lines.append("")
+        lines.append(f"Removing {len(hardening_recs)} non-essential packages would eliminate "
+                     f"~{removable_cves} CVEs:")
+        lines.append("")
+        lines.append("| Package | Category | CVEs | Action |")
+        lines.append("|---------|----------|------|--------|")
+        for r in hardening_recs[:15]:
+            lines.append(f"| {r['package']}@{r['version']} | {r['category']} | "
+                         f"{r['cve_count']} | Remove |")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def generate_single_report(findings, metadata, full=False, scan_dir=None):
     lines = []
     repo = metadata.get("repo", "Unknown")
     date = metadata.get("date", "Unknown")
@@ -219,6 +364,11 @@ def generate_single_report(findings, metadata, full=False):
                 if len(sev_findings) > 30:
                     lines.append(f"| ... | | | | +{len(sev_findings) - 30} more |")
                 lines.append("")
+
+    # Container Image Health (if grype-image results exist in scan dir)
+    image_section = _generate_image_health_section(scan_dir, metadata)
+    if image_section:
+        lines.append(image_section)
 
     # Recommendations
     lines.append("## Recommendations")
@@ -376,7 +526,7 @@ def main():
     if len(args.scan_dirs) == 1:
         findings = load_findings(args.scan_dirs[0])
         metadata = load_metadata(args.scan_dirs[0])
-        print(generate_single_report(findings, metadata, full=args.full))
+        print(generate_single_report(findings, metadata, full=args.full, scan_dir=args.scan_dirs[0]))
     else:
         print(generate_multi_report(args.scan_dirs, full=args.full))
 
