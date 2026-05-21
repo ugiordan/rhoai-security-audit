@@ -210,6 +210,156 @@ def _generate_image_health_section(scan_dir, metadata):
     return "\n".join(lines)
 
 
+def generate_unified_report(findings, metadata, full=False, scan_dir=None):
+    """Generate a unified report: must-fix items first, then full analysis."""
+    from report_mustfix import _group_findings, _group_dismissed, EFFORT_ESTIMATE, SEV_RANK as MF_SEV_RANK
+
+    lines = []
+    repo = metadata.get("repo", "Unknown")
+    repo_short = repo.split("/")[-1] if "/" in repo else repo
+    date = metadata.get("date", "Unknown")
+    branch = metadata.get("branch", "main")
+    commit = metadata.get("commit", "unknown")[:8]
+    tools = metadata.get("tools_run", [])
+    ai_skills = metadata.get("ai_skills_run", [])
+
+    sev_counts = Counter(f["severity"] for f in findings)
+
+    # Header
+    lines.append(f"# Security Report: {repo}")
+    lines.append("")
+    lines.append(f"**Branch:** {branch}  ")
+    lines.append(f"**Commit:** {commit}  ")
+    lines.append(f"**Scan Date:** {date}  ")
+    if tools:
+        lines.append(f"**Tools:** {len(tools)} ({', '.join(tools)})  ")
+    if ai_skills:
+        lines.append(f"**AI Skills:** {', '.join(ai_skills)}  ")
+    lines.append("")
+
+    # Executive Summary
+    lines.append("## Executive Summary")
+    lines.append("")
+    lines.append("| Severity | Count |")
+    lines.append("|----------|-------|")
+    for sev in ["critical", "high", "medium", "low", "info"]:
+        c = sev_counts.get(sev, 0)
+        if c > 0 or sev in ("critical", "high"):
+            lines.append(f"| {sev} | {c} |")
+    lines.append(f"| **Total** | **{len(findings)}** |")
+    lines.append("")
+
+    # Must-Fix Items (from report_mustfix logic)
+    fixes = _group_findings(findings, repo_short, min_severity="high")
+    lines.append(f"## Must-Fix Items ({len(fixes)})")
+    lines.append("")
+    if not fixes:
+        lines.append("No critical or high severity findings requiring immediate action.")
+        lines.append("")
+    else:
+        for i, fix in enumerate(fixes[:20], 1):
+            sev_label = fix["severity"].upper()
+            lines.append(f"### Fix {i}: {fix['title']} ({sev_label})")
+            lines.append("")
+            lines.append(f"**Risk:** {fix['description']}")
+            lines.append("")
+            lines.append(f"**Files to change:**")
+            for fpath in fix["files"][:10]:
+                lines.append(f"- `{fpath}`")
+            if len(fix["files"]) > 10:
+                lines.append(f"- +{len(fix['files']) - 10} more")
+            lines.append("")
+            if fix["recommendation"]:
+                lines.append(f"**Recommendation:** {fix['recommendation'][:500]}")
+                lines.append("")
+            lines.append(f"**Effort:** {fix['effort']}  ")
+            lines.append(f"**Detected by:** {', '.join(fix['detected_by'])}  ")
+            lines.append("")
+
+        # Summary table
+        lines.append("### Fix Summary")
+        lines.append("")
+        lines.append("| # | Finding | Severity | Files | Effort |")
+        lines.append("|---|---------|----------|-------|--------|")
+        for i, fix in enumerate(fixes[:20], 1):
+            lines.append(f"| {i} | {fix['title'][:50]} | {fix['severity']} | {fix['file_count']} | {fix['effort']} |")
+        lines.append("")
+
+    # Medium findings
+    medium = [f for f in findings if f["severity"] == "medium"]
+    if medium:
+        lines.append(f"## Additional Findings Worth Reviewing ({len(medium)})")
+        lines.append("")
+        lines.append("| # | Tool | File | Title |")
+        lines.append("|---|------|------|-------|")
+        for i, f in enumerate(medium[:30], 1):
+            flink = github_link(f["file"], repo, branch, f.get("line_start"))
+            lines.append(f"| {i} | {f['source']} | {flink} | {f['title'][:55].replace('|','/')} |")
+        if len(medium) > 30:
+            lines.append(f"| ... | | | +{len(medium) - 30} more |")
+        lines.append("")
+
+    # Container Image Health
+    image_section = _generate_image_health_section(scan_dir, metadata)
+    if image_section:
+        lines.append(image_section)
+
+    # CVE section
+    sca_findings = [f for f in findings if f.get("category") == "sca"]
+    if sca_findings:
+        lines.append(f"## Dependency Vulnerabilities ({len(sca_findings)})")
+        lines.append("")
+        lines.append("| # | CVE / Advisory | Package | Source | Fix |")
+        lines.append("|---|---------------|---------|--------|-----|")
+        for i, f in enumerate(sca_findings[:50], 1):
+            title = f["title"][:50].replace("|", "/")
+            rec = f.get("recommendation", "")[:40].replace("|", "/")
+            lines.append(f"| {i} | {title} | {f['file'][:30]} | {f['source']} | {rec} |")
+        if len(sca_findings) > 50:
+            lines.append(f"| ... | +{len(sca_findings) - 50} more | | | |")
+        lines.append("")
+
+    # Tool Coverage
+    lines.append("## Security Analysis")
+    lines.append("")
+    lines.append("### Tool Coverage")
+    lines.append("")
+    tool_sev = defaultdict(Counter)
+    for f in findings:
+        tool_sev[f.get("source", "unknown")][f["severity"]] += 1
+    lines.append("| Tool | Critical | High | Medium | Low | Total |")
+    lines.append("|------|----------|------|--------|-----|-------|")
+    for tool in sorted(tool_sev.keys()):
+        s = tool_sev[tool]
+        total = sum(s.values())
+        lines.append(f"| {tool} | {s.get('critical',0)} | {s.get('high',0)} | "
+                     f"{s.get('medium',0)} | {s.get('low',0)} | {total} |")
+    lines.append("")
+
+    # Low/Info summary
+    low_count = sev_counts.get("low", 0) + sev_counts.get("info", 0)
+    if low_count > 0:
+        lines.append(f"## Low/Informational Summary")
+        lines.append("")
+        lines.append(f"{low_count} low-severity and informational findings not shown.")
+        lines.append("")
+
+    # Dismissed
+    dismissed, dismissed_count = _group_dismissed(findings, repo_short)
+    if dismissed_count > 0:
+        lines.append(f"## Dismissed Findings ({dismissed_count})")
+        lines.append("")
+        lines.append("| Tool | Count |")
+        lines.append("|------|-------|")
+        for tool, count in sorted(dismissed.items(), key=lambda x: -x[1]):
+            lines.append(f"| {tool} | {count} |")
+        lines.append("")
+
+    lines.append("---")
+    lines.append("*Generated by RHOAI Security Audit*")
+    return "\n".join(lines)
+
+
 def generate_single_report(findings, metadata, full=False, scan_dir=None):
     lines = []
     repo = metadata.get("repo", "Unknown")
@@ -521,12 +671,19 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("scan_dirs", nargs="+")
     parser.add_argument("--full", action="store_true")
+    parser.add_argument("--format", choices=["unified", "legacy", "mustfix"], default="unified")
     args = parser.parse_args()
 
     if len(args.scan_dirs) == 1:
         findings = load_findings(args.scan_dirs[0])
         metadata = load_metadata(args.scan_dirs[0])
-        print(generate_single_report(findings, metadata, full=args.full, scan_dir=args.scan_dirs[0]))
+        if args.format == "unified":
+            print(generate_unified_report(findings, metadata, full=args.full, scan_dir=args.scan_dirs[0]))
+        elif args.format == "mustfix":
+            from report_mustfix import generate_mustfix
+            print(generate_mustfix(findings, metadata))
+        else:
+            print(generate_single_report(findings, metadata, full=args.full, scan_dir=args.scan_dirs[0]))
     else:
         print(generate_multi_report(args.scan_dirs, full=args.full))
 
