@@ -1,0 +1,14 @@
+{
+  "name": "rhoai-security-audit",
+  "description": "Security audit: SAST tools + AI skills, consolidated reports, trend tracking",
+  "version": "1.2.0",
+  "author": {
+    "name": "Ugo Giordano",
+    "email": "ugiordan@redhat.com"
+  },
+  "skills": "rhoai-security-audit/skills",
+  "dependencies": [
+    "adversarial-reviewing",
+    "rhoai-security-scanner"
+  ]
+}
