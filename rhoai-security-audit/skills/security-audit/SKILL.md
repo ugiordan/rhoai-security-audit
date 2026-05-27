@@ -46,59 +46,40 @@ Use `run_in_background: true`. This installs tools on first run
 While SAST runs, invoke AI skills. Skip ONLY if `--skip-ai` flag
 was explicitly passed.
 
-**Step 3a: Fetch architecture context (optional)**
-
-The `ugiordan/architecture-analyzer` repo runs daily GitHub Actions
-that analyze all RHOAI platform components. Download the pre-generated
-architecture context for the target repo if available:
+Check if pre-generated architecture context exists for this repo
+in `ugiordan/architecture-analyzer` GitHub Actions artifacts.
+Download it and pass via `--context` to enrich the adversarial
+review with structured architecture data:
 
 ```bash
 ARCH_CTX_DIR="${OUTPUT_DIR}/raw/arch-context"
-
-# Find the matching artifact (repo may be under a different org in the analyzer)
 ARTIFACT_NAME=$(gh api repos/ugiordan/architecture-analyzer/actions/artifacts \
   --jq ".artifacts[] | select(.name | endswith(\"${REPO_SHORT}\")) | .name" \
   2>/dev/null | head -1)
-
 if [ -n "${ARTIFACT_NAME}" ]; then
   gh run download --repo ugiordan/architecture-analyzer \
-    --name "${ARTIFACT_NAME}" \
-    --dir "${ARCH_CTX_DIR}" 2>/dev/null
+    --name "${ARTIFACT_NAME}" --dir "${ARCH_CTX_DIR}" 2>/dev/null
+  ARCH_DIR=$(dirname "$(find ${ARCH_CTX_DIR} -name component-architecture.json -type f 2>/dev/null | head -1)")
 fi
 ```
 
-If the download succeeds, find `component-architecture.json` under
-`${ARCH_CTX_DIR}`. If the download fails (repo not covered or
-artifacts expired), skip this step.
+Then invoke adversarial-reviewing with context if available:
 
-**Step 3b: Adversarial review**
+```
+Skill(skill="adversarial-reviewing:adversarial-reviewing", args="${REPO} --context architecture=${ARCH_DIR}")
+```
+
+Or without context if not available:
 
 ```
 Skill(skill="adversarial-reviewing:adversarial-reviewing", args="${REPO}")
 ```
 
-If architecture context was fetched (Step 3a), copy the JSON files
-into the adversarial-reviewing cache during its cache initialization
-phase. After the cache is initialized and before agents are
-dispatched:
+After it completes, invoke the semantic scanner:
 
-```bash
-ARCH_JSON=$(find ${ARCH_CTX_DIR} -name "component-architecture.json" -type f 2>/dev/null | head -1)
-if [ -n "${ARCH_JSON}" ]; then
-  ARCH_FILES=$(dirname "${ARCH_JSON}")
-  mkdir -p ${CACHE_DIR}/context/architecture
-  cp ${ARCH_FILES}/component-architecture.json ${CACHE_DIR}/context/architecture/
-  cp ${ARCH_FILES}/security-findings.json ${CACHE_DIR}/context/architecture/ 2>/dev/null
-  cp ${ARCH_FILES}/build-config.json ${CACHE_DIR}/context/architecture/ 2>/dev/null
-fi
 ```
-
-Then regenerate the cache navigation and instruct agents to read
-`context/architecture/` for structured architecture data.
-
-Copy outputs to `${OUTPUT_DIR}/raw/adversarial-reviewing/`.
-
-**Step 3c: Semantic security scanner**
+Skill(skill="rhoai-security-scanner:audit", args="${REPO}")
+```
 
 ```
 Skill(skill="rhoai-security-scanner:audit", args="${REPO}")
