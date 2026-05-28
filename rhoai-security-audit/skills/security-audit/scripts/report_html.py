@@ -473,7 +473,7 @@ def build_site(scan_dirs):
     (docs_dir / "tools.md").write_text(generate_tools(all_findings))
 
     # Build with mkdocs
-    site_dir = output_base.resolve() / "security-report"
+    site_dir = output_base.resolve() / "security-report-site"
     if site_dir.exists():
         shutil.rmtree(site_dir)
     print(f"Building MkDocs site...")
@@ -501,7 +501,7 @@ def build_site(scan_dirs):
 
         # Create zip for sharing
         import zipfile
-        zip_path = output_base.resolve() / "security-report.zip"
+        zip_path = output_base.resolve() / "security-report-site.zip"
         with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
             for f in site_dir.rglob("*"):
                 if f.is_file():
