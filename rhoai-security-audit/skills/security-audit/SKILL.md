@@ -98,15 +98,44 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/normalize.py "${OUTPUT_DIR}/raw" > "${OUTPUT
 python3 ${CLAUDE_SKILL_DIR}/scripts/dedup.py "${OUTPUT_DIR}/normalized-findings.json" > "${OUTPUT_DIR}/deduplicated-findings.json"
 ```
 
-**Step 5: Generate ALL THREE reports**
+**Step 4b: Triage**
+
+Cross-correlate SAST and AI review findings. This merges all sources
+into a single `triaged-findings.json` with confidence scores:
+
+```bash
+python3 ${CLAUDE_SKILL_DIR}/scripts/triage.py "${OUTPUT_DIR}" > "${OUTPUT_DIR}/triaged-findings.json"
+```
+
+The triage step:
+- Corroborates findings detected by both SAST and AI review (highest confidence)
+- Labels AI-only findings (code logic bugs SAST tools cannot detect)
+- Demotes findings in non-production paths (scripts/templates/, examples/)
+- Produces a unified, sorted finding list for reports
+
+**Step 5: Generate reports**
 
 ```bash
 python3 ${CLAUDE_SKILL_DIR}/scripts/report.py "${OUTPUT_DIR}" > "${OUTPUT_DIR}/executive-report.md"
 python3 ${CLAUDE_SKILL_DIR}/scripts/report_mustfix.py "${OUTPUT_DIR}" > "${OUTPUT_DIR}/must-fix-report.md"
 python3 ${CLAUDE_SKILL_DIR}/scripts/report_html.py "${OUTPUT_DIR}" > "${OUTPUT_DIR}/security-report.html"
+python3 ${CLAUDE_SKILL_DIR}/scripts/report_mustfix.py "${OUTPUT_DIR}" --html > "${OUTPUT_DIR}/must-fix-report.html"
 ```
 
-All three. Every run. No exceptions.
+Generate Google Docs versions of both reports:
+
+```
+mcp__google-docs__convert_markdown_to_doc(
+  markdown_content=<contents of executive-report.md>,
+  title="Security Report: ${REPO_SHORT} (${DATE})"
+)
+mcp__google-docs__convert_markdown_to_doc(
+  markdown_content=<contents of must-fix-report.md>,
+  title="Must-Fix: ${REPO_SHORT} (${DATE})"
+)
+```
+
+All reports. Every run. No exceptions.
 
 **Step 6: Trends and session log**
 

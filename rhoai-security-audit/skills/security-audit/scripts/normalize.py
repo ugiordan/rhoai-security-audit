@@ -46,6 +46,7 @@ def parse_semgrep(path):
             "description": r.get("extra", {}).get("message", ""),
             "confidence": 0.8, "rule_id": r.get("check_id", ""),
             "detected_by": ["semgrep"], "recommendation": "",
+            "snippet": r.get("extra", {}).get("lines", "").strip(),
         })
     return findings
 

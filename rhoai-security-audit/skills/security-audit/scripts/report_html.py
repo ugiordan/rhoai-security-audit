@@ -21,6 +21,9 @@ from pathlib import Path
 
 def load_findings(scan_dir):
     p = Path(scan_dir)
+    triaged = p / "triaged-findings.json"
+    if triaged.exists():
+        return json.loads(triaged.read_text())
     for name in ["deduplicated-findings.json", "normalized-findings.json"]:
         f = p / name
         if f.exists():
@@ -33,6 +36,71 @@ def load_metadata(scan_dir):
     if f.exists():
         return json.loads(f.read_text())
     return {}
+
+
+def load_ai_findings(scan_dir):
+    """Load AI review findings from raw/adversarial-reviewing/ and raw/semantic-scan/."""
+    p = Path(scan_dir)
+    ai_findings = []
+
+    for subdir in ["raw/adversarial-reviewing", "raw/semantic-scan"]:
+        d = p / subdir
+        if not d.exists():
+            continue
+        source = "adversarial-review" if "adversarial" in subdir else "semantic-scan"
+        for md_file in sorted(d.glob("*.md")):
+            if md_file.name.startswith("."):
+                continue
+            text = md_file.read_text()
+            findings = _parse_ai_findings(text, source, md_file.name)
+            ai_findings.extend(findings)
+    return ai_findings
+
+
+def _parse_ai_findings(text, source, filename):
+    """Extract structured findings from AI review markdown."""
+    import re
+    findings = []
+    blocks = re.split(r'\n(?=(?:Finding ID:|###?\s+(?:SEC|PERF|QUAL|CORR|ARCH|FINDING)-\d+))', text)
+    for block in blocks:
+        finding = {}
+        id_match = re.search(r'(?:Finding ID:\s*|###?\s+)((?:SEC|PERF|QUAL|CORR|ARCH|FINDING)-\d+)', block)
+        if not id_match:
+            continue
+        finding["id"] = id_match.group(1)
+        finding["source"] = source
+
+        sev_match = re.search(r'Severity:\s*(\w+)', block, re.IGNORECASE)
+        if sev_match:
+            sev = sev_match.group(1).lower()
+            sev_map = {"critical": "critical", "important": "high", "high": "high",
+                       "medium": "medium", "minor": "low", "low": "low"}
+            finding["severity"] = sev_map.get(sev, "medium")
+        else:
+            finding["severity"] = "medium"
+
+        conf_match = re.search(r'Confidence:\s*(\w+)', block, re.IGNORECASE)
+        finding["confidence"] = conf_match.group(1).lower() if conf_match else "medium"
+
+        title_match = re.search(r'Title:\s*(.+?)(?:\n|$)', block)
+        finding["title"] = title_match.group(1).strip() if title_match else finding["id"]
+
+        file_match = re.search(r'File:\s*`?([^\n`]+)`?', block)
+        finding["file"] = file_match.group(1).strip() if file_match else ""
+
+        line_match = re.search(r'Lines?:\s*(\d+)', block)
+        finding["line_start"] = int(line_match.group(1)) if line_match else 0
+
+        evidence_match = re.search(r'Evidence:\s*(.+?)(?=\n(?:Impact|Recommended|Finding ID:|\Z))', block, re.DOTALL)
+        finding["description"] = evidence_match.group(1).strip()[:500] if evidence_match else ""
+
+        fix_match = re.search(r'Recommended fix:\s*(.+?)(?=\n(?:Finding ID:|\Z))', block, re.DOTALL)
+        finding["recommendation"] = fix_match.group(1).strip()[:300] if fix_match else ""
+
+        finding["category"] = "ai-review"
+        finding["detected_by"] = [source]
+        findings.append(finding)
+    return findings
 
 
 def shorten_path(filepath, repo_name=""):
@@ -72,22 +140,49 @@ def _sev_badge(sev):
     return f'<span class="badge" style="background:{color}">{escape(sev.upper())}</span>'
 
 
-def _render_findings_table(findings, repo_short, show_detected_by=True):
+def _github_link(filepath, line_start, line_end, repo_full="", branch="main"):
+    """Build a GitHub permalink for a finding's source location."""
+    clean = shorten_path(filepath, repo_full.split("/")[-1] if repo_full else "")
+    if not repo_full or not clean:
+        return f"<code>{escape(clean or filepath)}</code>"
+    frag = f"#L{line_start}" if line_start else ""
+    if line_end and line_end != line_start and line_start:
+        frag = f"#L{line_start}-L{line_end}"
+    url = f"https://github.com/{repo_full}/blob/{branch}/{clean}{frag}"
+    return f'<a href="{url}" style="color:#58a6ff"><code>{escape(clean)}</code></a>'
+
+
+def _snippet_block(snippet):
+    """Render a code snippet in a collapsible pre block."""
+    if not snippet:
+        return ""
+    lines = snippet.strip().split("\n")
+    if len(lines) > 8:
+        lines = lines[:8] + ["..."]
+    code = escape("\n".join(lines))
+    return f'<pre style="background:#161b22;padding:8px;border-radius:4px;font-size:11px;margin:4px 0;overflow-x:auto;max-width:500px"><code>{code}</code></pre>'
+
+
+def _render_findings_table(findings, repo_short, show_detected_by=True, repo_full="", branch="main"):
     if not findings:
         return "<p>No findings.</p>"
     rows = []
     for i, f in enumerate(findings[:100], 1):
-        fpath = escape(shorten_path(f.get("file", ""), repo_short))
-        title = escape(f.get("title", "")[:80])
-        line = f.get("line_start", "")
+        fpath = f.get("file", "")
+        line = f.get("line_start", 0)
+        line_end = f.get("line_end", 0)
+        file_link = _github_link(fpath, line, line_end, repo_full, branch)
+        ftitle = escape(f.get("title", "")[:80])
         src = escape(f.get("source", ""))
         det = ", ".join(f.get("detected_by", [src]))
         rec = escape(f.get("recommendation", "")[:100])
         sev = _sev_badge(f["severity"])
+        snippet = _snippet_block(f.get("snippet", ""))
         det_col = f"<td>{escape(det)}</td>" if show_detected_by else ""
+        line_display = f"{line}" if line else ""
         rows.append(f"<tr><td>{i}</td><td>{sev}</td><td>{src}</td>"
-                     f"<td><code>{fpath}</code></td><td>{line}</td>"
-                     f"<td>{title}</td>{det_col}"
+                     f"<td>{file_link}</td><td>{line_display}</td>"
+                     f"<td>{ftitle}{snippet}</td>{det_col}"
                      f"<td>{rec}</td></tr>")
     overflow = ""
     if len(findings) > 100:
@@ -115,13 +210,21 @@ def generate_html(scan_dirs):
     for _, f, _ in all_data:
         all_findings.extend(f)
 
+    # AI findings are included in triaged-findings.json (origin=ai)
+    # If not triaged yet, load them separately as fallback
+    ai_findings = [f for f in all_findings if f.get("origin") == "ai"]
+    if not ai_findings:
+        for d in scan_dirs:
+            ai_findings.extend(load_ai_findings(d))
+
     first_meta = all_data[0][2]
     title = "RHOAI Security Audit Report" if multi else f"Security Report: {first_meta.get('repo', 'Unknown')}"
 
-    sev_counts = Counter(f["severity"] for f in all_findings)
-    tool_counts = Counter(f.get("source", "unknown") for f in all_findings)
-    cat_counts = Counter(f.get("category", "other") for f in all_findings)
-    total = len(all_findings)
+    combined = all_findings + ai_findings
+    sev_counts = Counter(f["severity"] for f in combined)
+    tool_counts = Counter(f.get("source", "unknown") for f in combined)
+    cat_counts = Counter(f.get("category", "other") for f in combined)
+    total = len(combined)
 
     # Severity donut data
     donut_segments = []
@@ -145,6 +248,8 @@ def generate_html(scan_dirs):
         nav_items.append('<a href="#cves">CVEs</a>')
     if any(f.get("category") == "secrets" for f in all_findings):
         nav_items.append('<a href="#secrets">Secrets</a>')
+    if ai_findings:
+        nav_items.append('<a href="#ai-review">AI Review</a>')
     nav_items.append('<a href="#critical">Critical</a>')
     nav_items.append('<a href="#high">High</a>')
     if multi:
@@ -204,6 +309,8 @@ def generate_html(scan_dirs):
 
     # Finding sections
     repo_short = first_meta.get("repo", "").split("/")[-1] if not multi else ""
+    repo_full = first_meta.get("repo", "") if not multi else ""
+    branch = first_meta.get("branch", "main")
 
     sca_section = ""
     sca_findings = [f for f in all_findings if f.get("category") == "sca"]
@@ -211,7 +318,7 @@ def generate_html(scan_dirs):
         sca_section = f"""
         <section id="cves">
             <h2>Dependency Vulnerabilities ({len(sca_findings)})</h2>
-            {_render_findings_table(sca_findings, repo_short)}
+            {_render_findings_table(sca_findings, repo_short, repo_full=repo_full, branch=branch)}
         </section>"""
 
     secrets_section = ""
@@ -220,8 +327,33 @@ def generate_html(scan_dirs):
         secrets_section = f"""
         <section id="secrets">
             <h2>Secrets Detected ({len(secret_findings)})</h2>
-            {_render_findings_table(secret_findings, repo_short, show_detected_by=False)}
+            {_render_findings_table(secret_findings, repo_short, show_detected_by=False, repo_full=repo_full, branch=branch)}
         </section>"""
+
+    # AI Review section
+    ai_section = ""
+    if ai_findings:
+        ai_important = [f for f in ai_findings if f["severity"] in ("critical", "high")]
+        ai_minor = [f for f in ai_findings if f["severity"] not in ("critical", "high")]
+        ai_rows = []
+        for i, f in enumerate(ai_findings, 1):
+            fpath = escape(f.get("file", ""))
+            sev = _sev_badge(f["severity"])
+            ftitle = escape(f.get("title", "")[:80])
+            src = escape(f.get("source", ""))
+            desc = escape(f.get("description", "")[:200])
+            rec = escape(f.get("recommendation", "")[:200])
+            ai_rows.append(f"""<tr><td>{escape(f['id'])}</td><td>{sev}</td><td><code>{fpath}</code></td>
+                <td>{ftitle}</td><td style="font-size:12px">{desc}</td><td style="font-size:12px">{rec}</td></tr>""")
+        ai_section = f"""
+    <section id="ai-review">
+        <h2>AI Review Findings ({len(ai_findings)})</h2>
+        <p style="color:#8b949e;margin-bottom:12px">Findings from adversarial multi-agent review and semantic security analysis. These are code-level issues that require semantic understanding beyond pattern matching.</p>
+        <table>
+        <thead><tr><th>ID</th><th>Severity</th><th>File</th><th>Title</th><th>Evidence</th><th>Fix</th></tr></thead>
+        <tbody>{''.join(ai_rows)}</tbody>
+        </table>
+    </section>"""
 
     crit_findings = [f for f in all_findings if f["severity"] == "critical" and f.get("category") not in ("sca", "secrets")]
     high_findings = [f for f in all_findings if f["severity"] == "high" and f.get("category") not in ("sca", "secrets")]
@@ -229,13 +361,13 @@ def generate_html(scan_dirs):
     crit_section = f"""
     <section id="critical">
         <h2>Critical SAST Findings ({len(crit_findings)})</h2>
-        {_render_findings_table(crit_findings, repo_short)}
+        {_render_findings_table(crit_findings, repo_short, repo_full=repo_full, branch=branch)}
     </section>""" if crit_findings else ""
 
     high_section = f"""
     <section id="high">
         <h2>High SAST Findings ({len(high_findings)})</h2>
-        {_render_findings_table(high_findings, repo_short)}
+        {_render_findings_table(high_findings, repo_short, repo_full=repo_full, branch=branch)}
     </section>""" if high_findings else ""
 
     # Multi-repo sections
@@ -329,6 +461,7 @@ section {{ margin-bottom: 24px; }}
         </table>
     </section>
 
+    {ai_section}
     {sca_section}
     {secrets_section}
     {crit_section}

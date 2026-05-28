@@ -18,6 +18,9 @@ from pathlib import Path
 
 def load_findings(scan_dir):
     p = Path(scan_dir)
+    triaged = p / "triaged-findings.json"
+    if triaged.exists():
+        return json.loads(triaged.read_text())
     for name in ["deduplicated-findings.json", "normalized-findings.json"]:
         f = p / name
         if f.exists():
