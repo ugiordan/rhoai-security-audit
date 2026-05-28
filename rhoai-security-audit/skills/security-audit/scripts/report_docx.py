@@ -120,18 +120,35 @@ def _add_body(doc, text, bold=False, color=None):
 
 
 def _add_code(doc, text):
-    p = doc.add_paragraph()
-    p.paragraph_format.space_before = Pt(4)
-    p.paragraph_format.space_after = Pt(4)
-    run = p.add_run(text)
-    run.font.name = MONO_FONT
-    run.font.size = Pt(9)
-    run.font.color.rgb = RH_DARK
-    shading = run._element.get_or_add_rPr()
     from lxml import etree
-    shd = etree.SubElement(shading, qn("w:shd"))
+    lines = text.strip().split("\n")
+    if len(lines) > 10:
+        lines = lines[:10] + ["..."]
+
+    p = doc.add_paragraph()
+    p.paragraph_format.space_before = Pt(6)
+    p.paragraph_format.space_after = Pt(6)
+    p.paragraph_format.left_indent = Cm(0.5)
+
+    # Paragraph-level shading (grey background for entire block)
+    ppr = p._element.get_or_add_pPr()
+    shd = etree.SubElement(ppr, qn("w:shd"))
     shd.set(qn("w:val"), "clear")
     shd.set(qn("w:fill"), "F0F0F0")
+
+    # Paragraph borders (thin border around the code block)
+    pbdr = etree.SubElement(ppr, qn("w:pBdr"))
+    for side in ["top", "left", "bottom", "right"]:
+        bdr = etree.SubElement(pbdr, qn(f"w:{side}"))
+        bdr.set(qn("w:val"), "single")
+        bdr.set(qn("w:sz"), "4")
+        bdr.set(qn("w:space"), "4")
+        bdr.set(qn("w:color"), "D0D0D0")
+
+    run = p.add_run("\n".join(lines))
+    run.font.name = MONO_FONT
+    run.font.size = Pt(8)
+    run.font.color.rgb = RGBColor(0x33, 0x33, 0x33)
     return p
 
 
@@ -353,16 +370,30 @@ def generate_docx(scan_dir, output_path):
 
             _add_heading(doc, f"Finding {i}: {title} ({sev.upper()}{triage_label})", level=2)
 
-            _add_body(doc, f"File: {file_display}", bold=True)
-            _add_body(doc, f"Source: {f.get('source', '')} | Category: {f.get('category', '')}")
+            # Metadata block
+            rule_id = f.get("rule_id", "")
+            source = f.get("source", "")
+            category = f.get("category", "")
+            meta_parts = [f"File: {file_display}"]
+            if source:
+                meta_parts.append(f"Source: {source}")
+            if rule_id and rule_id != title:
+                meta_parts.append(f"Rule: {rule_id}")
+            if category:
+                meta_parts.append(f"Category: {category}")
+            _add_body(doc, " | ".join(meta_parts), bold=True)
 
+            # Description (enrich sparse ones)
             desc = f.get("description", "")
-            if desc:
-                _add_body(doc, desc)
+            if not desc or desc == title:
+                desc = f"{title} detected in {file_display} by {source}."
+                if rule_id:
+                    desc += f" Rule: {rule_id}."
+            _add_body(doc, desc)
 
             snippet = f.get("snippet", "")
             if snippet:
-                _add_code(doc, snippet[:300])
+                _add_code(doc, snippet[:500])
 
             rec = f.get("recommendation", "")
             if rec:
@@ -372,7 +403,7 @@ def generate_docx(scan_dir, output_path):
                 run.font.size = Pt(10)
                 run.font.bold = True
                 run.font.color.rgb = RH_RED
-                run = p.add_run(rec[:300])
+                run = p.add_run(rec[:400])
                 run.font.name = BODY_FONT
                 run.font.size = Pt(10)
 
