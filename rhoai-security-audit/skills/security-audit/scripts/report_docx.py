@@ -152,12 +152,53 @@ def _add_code(doc, text):
     return p
 
 
-def _add_recommendation(doc, text):
-    """Render recommendation with inline code blocks properly formatted."""
-    import re
-    # Split on markdown code fences or detect code-like lines
-    parts = re.split(r'(```[\s\S]*?```|`[^`]+`)', text)
+def _add_rich_text(doc, text):
+    """Render text that may contain inline code blocks. Splits at Remediation: and indented lines."""
+    if not text:
+        return
 
+    # Split at "Remediation:" boundary
+    parts = text.split("Remediation:")
+    prose = parts[0].strip()
+    remediation = "Remediation:".join(parts[1:]).strip() if len(parts) > 1 else ""
+
+    # Render prose (may still have indented code lines)
+    if prose:
+        _add_mixed_content(doc, prose)
+
+    # Render remediation with label
+    if remediation:
+        _add_recommendation(doc, remediation)
+
+
+def _add_mixed_content(doc, text):
+    """Render text splitting prose from indented code blocks."""
+    lines = text.split("\n")
+    prose_buf = []
+    code_buf = []
+
+    for line in lines:
+        is_code = (line.startswith("  ") and line.strip()) or line.startswith("\t")
+        if is_code:
+            if prose_buf:
+                _add_body(doc, " ".join(prose_buf))
+                prose_buf = []
+            code_buf.append(line)
+        else:
+            if code_buf:
+                _add_code(doc, "\n".join(code_buf))
+                code_buf = []
+            if line.strip():
+                prose_buf.append(line.strip())
+
+    if prose_buf:
+        _add_body(doc, " ".join(prose_buf))
+    if code_buf:
+        _add_code(doc, "\n".join(code_buf))
+
+
+def _add_recommendation(doc, text):
+    """Render recommendation with a label, splitting prose from code."""
     p = doc.add_paragraph()
     run = p.add_run("Recommended Fix: ")
     run.font.name = BODY_FONT
@@ -165,52 +206,7 @@ def _add_recommendation(doc, text):
     run.font.bold = True
     run.font.color.rgb = RH_RED
 
-    # Detect if the text has code patterns (indented lines, shell commands, etc.)
-    lines = text.split("\n")
-    prose_lines = []
-    code_lines = []
-    in_code = False
-
-    for line in lines:
-        stripped = line.strip()
-        is_code = (
-            stripped.startswith("```") or
-            stripped.startswith("$") or
-            stripped.startswith("#") and not stripped.startswith("# ") or
-            stripped.startswith("rm ") or stripped.startswith("mv ") or
-            stripped.startswith("if ") and stripped.endswith(";") or
-            "=" in stripped and not " " in stripped.split("=")[0] or
-            stripped.startswith("func ") or stripped.startswith("return ") or
-            stripped.startswith("for ") and ":=" in stripped or
-            line.startswith("  ") and len(stripped) > 0 and any(
-                c in stripped for c in ["{", "}", "()", "//", "/*", "=>", ":=", "&&"])
-        )
-
-        if stripped.startswith("```"):
-            in_code = not in_code
-            continue
-
-        if in_code or is_code:
-            if prose_lines:
-                run = p.add_run(" ".join(prose_lines))
-                run.font.name = BODY_FONT
-                run.font.size = Pt(10)
-                prose_lines = []
-            code_lines.append(line)
-        else:
-            if code_lines:
-                _add_code(doc, "\n".join(code_lines))
-                code_lines = []
-                p = doc.add_paragraph()
-            prose_lines.append(stripped)
-
-    if prose_lines:
-        run = p.add_run(" ".join(prose_lines))
-        run.font.name = BODY_FONT
-        run.font.size = Pt(10)
-
-    if code_lines:
-        _add_code(doc, "\n".join(code_lines))
+    _add_mixed_content(doc, text)
 
 
 def _set_cell_shading(cell, color_hex):
@@ -444,13 +440,13 @@ def generate_docx(scan_dir, output_path):
                 meta_parts.append(f"Category: {category}")
             _add_body(doc, " | ".join(meta_parts), bold=True)
 
-            # Description (enrich sparse ones)
+            # Description: split at "Remediation:" if present
             desc = f.get("description", "")
             if not desc or desc == title:
                 desc = f"{title} detected in {file_display} by {source}."
                 if rule_id:
                     desc += f" Rule: {rule_id}."
-            _add_body(doc, desc)
+            _add_rich_text(doc, desc)
 
             snippet = f.get("snippet", "")
             if snippet:
