@@ -142,14 +142,21 @@ def _sev_badge(sev):
 
 def _github_link(filepath, line_start, line_end, repo_full="", branch="main"):
     """Build a GitHub permalink for a finding's source location."""
-    clean = shorten_path(filepath, repo_full.split("/")[-1] if repo_full else "")
-    if not repo_full or not clean:
-        return f"<code>{escape(clean or filepath)}</code>"
+    if not repo_full or not filepath:
+        return f"<code>{escape(filepath)}</code>"
+    # Strip repos/<name>/ prefix from SAST paths for the URL
+    url_path = filepath
+    parts = filepath.replace("\\", "/").split("/")
+    for i, p in enumerate(parts):
+        if p in ("repo", "repos"):
+            url_path = "/".join(parts[i + 2:]) if i + 2 <= len(parts) else filepath
+            break
+    display = url_path
     frag = f"#L{line_start}" if line_start else ""
     if line_end and line_end != line_start and line_start:
         frag = f"#L{line_start}-L{line_end}"
-    url = f"https://github.com/{repo_full}/blob/{branch}/{clean}{frag}"
-    return f'<a href="{url}" style="color:#58a6ff"><code>{escape(clean)}</code></a>'
+    url = f"https://github.com/{repo_full}/blob/{branch}/{url_path}{frag}"
+    return f'<a href="{url}" style="color:#58a6ff"><code>{escape(display)}</code></a>'
 
 
 def _snippet_block(snippet):
