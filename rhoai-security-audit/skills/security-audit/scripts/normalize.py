@@ -145,6 +145,15 @@ def parse_kube_linter(path):
     return findings
 
 
+def _fix_cicd_path(filepath, tool):
+    """Prepend .github/workflows/ for CI/CD tools that report relative to that dir."""
+    if not filepath:
+        return filepath
+    if tool in ("zizmor", "actionlint") and not filepath.startswith(".github"):
+        return f".github/workflows/{filepath}"
+    return filepath
+
+
 def parse_sarif(path, tool):
     data = json.loads(path.read_text())
     findings = []
@@ -156,7 +165,7 @@ def parse_sarif(path, tool):
                 "id": make_id(tool, i), "source": tool,
                 "severity": norm_sev(r.get("level", "note")),
                 "category": "cicd" if tool in ("actionlint", "zizmor") else "config",
-                "file": loc.get("artifactLocation", {}).get("uri", ""),
+                "file": _fix_cicd_path(loc.get("artifactLocation", {}).get("uri", ""), tool),
                 "line_start": region.get("startLine", 0),
                 "line_end": region.get("endLine", region.get("startLine", 0)),
                 "title": r.get("message", {}).get("text", "")[:100],
