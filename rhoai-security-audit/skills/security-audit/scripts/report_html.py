@@ -349,9 +349,10 @@ h1 {{ font-size:20px; color:#f0f6fc; margin-bottom:2px; }}
 .stat-label {{ font-size:10px; text-transform:uppercase; color:#8b949e; }}
 .donut {{ width:80px; height:80px; border-radius:50%; background:conic-gradient({donut_gradient}); position:relative; margin-left:auto; }}
 .donut::after {{ content:'{total}'; position:absolute; inset:14px; background:#0d1117; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:16px; font-weight:700; color:#f0f6fc; }}
-.filter-bar {{ display:flex; gap:4px; flex-wrap:wrap; padding:12px 0; border-bottom:1px solid #21262d; margin-bottom:12px; align-items:center; }}
-.filter-sep {{ color:#30363d; padding:0 4px; font-size:12px; }}
-.filter-label {{ font-size:10px; color:#8b949e; margin-right:4px; }}
+.filter-bar {{ padding:12px 0; border-bottom:1px solid #21262d; margin-bottom:12px; }}
+.filter-row {{ display:flex; gap:4px; flex-wrap:wrap; align-items:center; margin-bottom:6px; }}
+.filter-row:last-child {{ margin-bottom:0; }}
+.filter-label {{ font-size:10px; color:#8b949e; margin-right:4px; min-width:55px; }}
 .filter-chip {{ padding:3px 10px; border-radius:12px; font-size:11px; font-weight:500; cursor:pointer; background:#30363d; color:#8b949e; border:1px solid transparent; transition:all .15s; user-select:none; }}
 .filter-chip.active {{ background:var(--active-bg,#30363d); color:#fff; border-color:rgba(255,255,255,.1); }}
 .filter-chip:hover {{ opacity:.85; }}
@@ -407,11 +408,9 @@ code {{ background:#21262d; padding:1px 5px; border-radius:3px; font-size:11px; 
 </div>
 
 <div class="filter-bar">
-    <span class="filter-label">Severity:</span> {sev_chips}
-    <span class="filter-sep">|</span>
-    <span class="filter-label">Source:</span> {source_chips}
-    <span class="filter-sep">|</span>
-    <span class="filter-label">Triage:</span> {triage_chips}
+    <div class="filter-row"><span class="filter-label">Severity:</span> {sev_chips}</div>
+    <div class="filter-row"><span class="filter-label">Source:</span> {source_chips}</div>
+    <div class="filter-row"><span class="filter-label">Triage:</span> {triage_chips}</div>
 </div>
 <div class="counter" id="counter">Showing {len(non_sca)} of {total} findings</div>
 
