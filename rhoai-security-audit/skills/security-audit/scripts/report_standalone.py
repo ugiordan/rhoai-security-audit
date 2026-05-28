@@ -159,12 +159,20 @@ def _render_card(f, repo_full, branch_ref, commit_ref):
     source = f.get("source", "")
     triage_status = f.get("triage", {}).get("status", "")
     title_text = escape(f.get("title", "")[:100])
-    desc = escape(f.get("description", "")[:300])
+    raw_desc = f.get("description", "")
     snippet = f.get("snippet", "")
-    rec = escape(f.get("recommendation", "")[:300])
+    rec = f.get("recommendation", "")
     fid = escape(f.get("id", ""))
 
-    triage_status = f.get("triage", {}).get("status", "")
+    # Extract remediation from description if recommendation is empty
+    if not rec and "Remediation:" in raw_desc:
+        parts = raw_desc.split("Remediation:", 1)
+        raw_desc = parts[0].strip()
+        rec = parts[1].strip()
+
+    desc = escape(raw_desc[:300])
+    rec = escape(rec[:300])
+
     triage_badge = TRIAGE_BADGES.get(triage_status, "")
     sev_badge = f'<span class="chip" style="background:{color};color:#fff">{sev.upper()}</span>{triage_badge}'
 
@@ -193,7 +201,7 @@ def _render_card(f, repo_full, branch_ref, commit_ref):
 
     return f'''<div class="finding-card" data-severity="{sev}" data-source="{escape(source)}" data-triage="{triage_status}" data-origin="{f.get('origin','sast')}" style="border-left-color:{color}">
     <div class="card-header">
-        {sev_badge}{triage_badge}
+        {sev_badge}
         <span class="card-title">{title_text}</span>
         {src_badge}
         <span class="card-file">{file_link}</span>
