@@ -81,10 +81,6 @@ After it completes, invoke the semantic scanner:
 Skill(skill="rhoai-security-scanner:audit", args="${REPO}")
 ```
 
-```
-Skill(skill="rhoai-security-scanner:audit", args="${REPO}")
-```
-
 Copy outputs to `${OUTPUT_DIR}/raw/semantic-scan/`.
 
 Log each dispatch with `session_log.py agent`.
@@ -133,6 +129,12 @@ mcp__google-docs__convert_markdown_to_doc(
   markdown_content=<contents of must-fix-report.md>,
   title="Must-Fix: ${REPO_SHORT} (${DATE})"
 )
+```
+
+Generate Word document (Red Hat template styling):
+
+```bash
+python3 ${CLAUDE_SKILL_DIR}/scripts/report_docx.py "${OUTPUT_DIR}"
 ```
 
 All reports. Every run. No exceptions.
