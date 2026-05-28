@@ -131,10 +131,20 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/session_log.py finalize --session-file "${SE
 
 Show the trends table and present the executive report to the user.
 
+## Flags
+
+| Flag | Effect |
+|------|--------|
+| `--skip-ai` | Skip AI skills (Step 3), SAST only |
+| `--reports-only` | Skip Steps 1-4, regenerate reports from existing data in `output/<repo>/<date>/` |
+
+When `--reports-only` is passed, skip directly to Step 4b (triage)
+and Step 5 (reports). The raw data must already exist in the output
+directory. Useful for regenerating reports after fixing report scripts.
+
 ## Rules
 
 Do not skip AI skills unless `--skip-ai` was explicitly passed.
-Do not skip any of the three reports.
 Do not add your own security analysis.
 Do not modify the pipeline order.
 If a step fails, log the error and continue to the next step.
