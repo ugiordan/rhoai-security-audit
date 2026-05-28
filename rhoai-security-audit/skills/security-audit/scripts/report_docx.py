@@ -81,6 +81,47 @@ def _file_display(filepath, line_start):
     return f"{filepath}:{line_start}" if line_start else filepath
 
 
+def _github_url(filepath, line_start, line_end, repo_full, ref):
+    if not repo_full or not filepath:
+        return ""
+    url_path = filepath
+    parts = filepath.replace("\\", "/").split("/")
+    for i, p in enumerate(parts):
+        if p in ("repo", "repos"):
+            url_path = "/".join(parts[i + 2:]) if i + 2 <= len(parts) else filepath
+            break
+    frag = f"#L{line_start}" if line_start else ""
+    if line_end and line_end != line_start and line_start:
+        frag = f"#L{line_start}-L{line_end}"
+    return f"https://github.com/{repo_full}/blob/{ref}/{url_path}{frag}"
+
+
+def _add_hyperlink(paragraph, url, text):
+    """Add a clickable hyperlink to a paragraph."""
+    from docx.opc.constants import RELATIONSHIP_TYPE as RT
+    part = paragraph.part
+    r_id = part.relate_to(url, RT.HYPERLINK, is_external=True)
+    from lxml import etree
+    hyperlink = etree.SubElement(paragraph._element, qn("w:hyperlink"))
+    hyperlink.set(qn("r:id"), r_id)
+    run_elem = etree.SubElement(hyperlink, qn("w:r"))
+    rpr = etree.SubElement(run_elem, qn("w:rPr"))
+    style = etree.SubElement(rpr, qn("w:rStyle"))
+    style.set(qn("w:val"), "Hyperlink")
+    color = etree.SubElement(rpr, qn("w:color"))
+    color.set(qn("w:val"), "2563EB")
+    u = etree.SubElement(rpr, qn("w:u"))
+    u.set(qn("w:val"), "single")
+    font = etree.SubElement(rpr, qn("w:rFonts"))
+    font.set(qn("w:ascii"), MONO_FONT)
+    font.set(qn("w:hAnsi"), MONO_FONT)
+    sz = etree.SubElement(rpr, qn("w:sz"))
+    sz.set(qn("w:val"), "18")
+    t = etree.SubElement(run_elem, qn("w:t"))
+    t.text = text
+    t.set(qn("xml:space"), "preserve")
+
+
 def _set_font(run, name=BODY_FONT, size=10, bold=False, italic=False, color=None):
     run.font.name = name
     run.font.size = Pt(size)
@@ -287,12 +328,18 @@ def _add_findings_table(doc, findings, repo_full, branch_ref, commit_ref):
         run.font.name = BODY_FONT
         run.font.size = Pt(9)
 
-        # File cell
+        # File cell (hyperlinked)
         cell = row.cells[2]
         display = _file_display(f.get("file", ""), f.get("line_start", 0))
-        run = cell.paragraphs[0].add_run(display)
-        run.font.name = MONO_FONT
-        run.font.size = Pt(8)
+        ref = branch_ref if f.get("origin") == "ai" else (commit_ref or branch_ref)
+        url = _github_url(f.get("file", ""), f.get("line_start", 0),
+                          f.get("line_end", 0), repo_full, ref)
+        if url:
+            _add_hyperlink(cell.paragraphs[0], url, display)
+        else:
+            run = cell.paragraphs[0].add_run(display)
+            run.font.name = MONO_FONT
+            run.font.size = Pt(8)
 
         # Title cell
         cell = row.cells[3]
@@ -427,18 +474,35 @@ def generate_docx(scan_dir, output_path):
 
             _add_heading(doc, f"Finding {i}: {title} ({sev.upper()}{triage_label})", level=2)
 
-            # Metadata block
+            # Metadata block with hyperlinked file path
             rule_id = f.get("rule_id", "")
             source = f.get("source", "")
             category = f.get("category", "")
-            meta_parts = [f"File: {file_display}"]
+            ref = branch_ref if f.get("origin") == "ai" else (commit_ref or branch_ref)
+            url = _github_url(f.get("file", ""), f.get("line_start", 0),
+                              f.get("line_end", 0), repo_full, ref)
+
+            p = doc.add_paragraph()
+            run = p.add_run("File: ")
+            run.font.name = BODY_FONT
+            run.font.size = Pt(10)
+            run.font.bold = True
+            if url:
+                _add_hyperlink(p, url, file_display)
+            else:
+                run = p.add_run(file_display)
+                run.font.name = MONO_FONT
+                run.font.size = Pt(9)
+
+            meta_parts = []
             if source:
                 meta_parts.append(f"Source: {source}")
             if rule_id and rule_id != title:
                 meta_parts.append(f"Rule: {rule_id}")
             if category:
                 meta_parts.append(f"Category: {category}")
-            _add_body(doc, " | ".join(meta_parts), bold=True)
+            if meta_parts:
+                _add_body(doc, " | ".join(meta_parts), color=RH_GREY)
 
             # Description: split at "Remediation:" if present
             desc = f.get("description", "")
