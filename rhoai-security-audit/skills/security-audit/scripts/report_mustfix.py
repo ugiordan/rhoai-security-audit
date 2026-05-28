@@ -31,10 +31,45 @@ def load_findings(scan_dir):
 
 
 def load_metadata(scan_dir):
-    f = Path(scan_dir) / "scan-metadata.json"
+    p = Path(scan_dir)
+    meta = {}
+    f = p / "scan-metadata.json"
     if f.exists():
-        return json.loads(f.read_text())
-    return {}
+        meta = json.loads(f.read_text())
+    ss = p / "raw" / "security-summary.json"
+    if ss.exists() and not meta:
+        try:
+            meta = json.loads(ss.read_text())
+        except Exception:
+            pass
+    ci = p / "raw" / "commit-info.json"
+    if ci.exists():
+        try:
+            info = json.loads(ci.read_text())
+            if not meta.get("branch"):
+                meta["branch"] = info.get("default_branch", "main")
+            if not meta.get("commit"):
+                meta["commit"] = info.get("commit_sha", "")
+        except Exception:
+            pass
+    if not meta.get("repo"):
+        parts = Path(scan_dir).resolve().parts
+        for i, part in enumerate(parts):
+            if part == "output" and i + 1 < len(parts):
+                meta["repo"] = f"opendatahub-io/{parts[i + 1]}"
+                break
+    return meta
+
+
+def _github_url(filepath, line_start, repo_full, ref):
+    if not repo_full or not filepath:
+        return ""
+    try:
+        line = int(line_start) if line_start else 0
+    except (ValueError, TypeError):
+        line = 0
+    frag = f"#L{line}" if line > 0 else ""
+    return f"https://github.com/{repo_full}/blob/{ref}/{filepath}{frag}"
 
 
 def shorten_path(filepath, repo_name=""):
@@ -276,8 +311,8 @@ tr:hover { background: #161b22; }
 
 def generate_mustfix_html(findings, ai_findings, metadata, min_severity="high"):
     from html import escape
-    repo = metadata.get("repo", "Unknown")
-    repo_short = repo.split("/")[-1] if "/" in repo else repo
+    repo_full = metadata.get("repo", "Unknown")
+    repo_short = repo_full.split("/")[-1] if "/" in repo_full else repo_full
 
     all_combined = findings + ai_findings
     fixes = _group_findings(all_combined, repo_short, min_severity)
@@ -287,9 +322,20 @@ def generate_mustfix_html(findings, ai_findings, metadata, min_severity="high"):
 
     sev_badge = lambda s: f'<span class="badge badge-{s}">{s.upper()}</span>'
 
+    branch = metadata.get("branch", "main")
+    commit = metadata.get("commit", "")
+    ref = commit or branch
+
     cards = []
     for i, fix in enumerate(fixes, 1):
-        files_html = "".join(f"<li><code>{escape(f)}</code></li>" for f in fix["files"][:10])
+        file_items = []
+        for fp in fix["files"][:10]:
+            url = _github_url(fp.split(":")[0], fp.split(":")[-1] if ":" in fp else "", repo_full, ref)
+            if url:
+                file_items.append(f'<li><a href="{url}" style="color:#58a6ff"><code>{escape(fp)}</code></a></li>')
+            else:
+                file_items.append(f"<li><code>{escape(fp)}</code></li>")
+        files_html = "".join(file_items)
         if len(fix["files"]) > 10:
             files_html += f"<li>+{len(fix['files'])-10} more</li>"
         source_badges = " ".join(f'<span class="badge badge-source">{escape(s)}</span>' for s in fix["detected_by"])
@@ -329,7 +375,7 @@ def generate_mustfix_html(findings, ai_findings, metadata, min_severity="high"):
 <style>{MUSTFIX_HTML_STYLE}</style></head><body>
 <h1>Must-Fix: {escape(repo_short)}</h1>
 <div class="meta">
-    {escape(repo)} | Branch: {escape(metadata.get('branch','main'))} |
+    {escape(repo_full)} | Branch: {escape(metadata.get('branch','main'))} |
     {escape(str(metadata.get('date','')))} |
     {len(fixes)} items ({sast_count} SAST, {ai_count} AI review)
 </div>
