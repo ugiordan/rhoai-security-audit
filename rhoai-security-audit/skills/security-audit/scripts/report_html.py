@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Generate self-contained HTML security report.
 
-Styled like architecture-analyzer pages with:
-- Severity donut chart (CSS-only)
-- Collapsible finding sections
-- Tool coverage heatmap
-- Color-coded severity badges
-- Dark sidebar navigation
+Card-based layout optimized for triage:
+- Stat cards + donut chart at top
+- Filter chips (severity, source, triage status)
+- Finding cards with severity border, triage badges, code snippets
+- Collapsible dependency CVEs and tool coverage
+- GitHub permalink file:line links
+- Self-contained: all CSS + JS inline, no external deps
 
 Usage:
     python3 report_html.py <scan-dir> > report.html
@@ -17,6 +18,24 @@ import json
 from collections import Counter, defaultdict
 from html import escape
 from pathlib import Path
+
+SEV_COLORS = {
+    "critical": "#dc3545", "high": "#fd7e14", "medium": "#ffc107",
+    "low": "#17a2b8", "info": "#6c757d",
+}
+SEV_RANK = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
+SOURCE_COLORS = {
+    "adversarial-review": "#2563eb", "semantic-scan": "#7c3aed",
+}
+TRIAGE_LABELS = {
+    "corroborated": ("CORR", "#16a34a", "Found by both SAST and AI"),
+    "ai-only": ("AI", "#2563eb", "AI-only finding (logic bug)"),
+}
+CAT_LABELS = {
+    "secrets": "Secrets", "sca": "CVEs / SCA", "k8s": "Kubernetes",
+    "config": "Configuration", "cicd": "CI/CD", "injection": "Injection",
+    "ai-review": "AI Review", "other": "SAST",
+}
 
 
 def load_findings(scan_dir):
@@ -37,7 +56,6 @@ def load_metadata(scan_dir):
     f = p / "scan-metadata.json"
     if f.exists():
         meta = json.loads(f.read_text())
-    # Enrich with commit-info.json (has default_branch and commit_sha)
     ci = p / "raw" / "commit-info.json"
     if ci.exists():
         try:
@@ -52,10 +70,9 @@ def load_metadata(scan_dir):
 
 
 def load_ai_findings(scan_dir):
-    """Load AI review findings from raw/adversarial-reviewing/ and raw/semantic-scan/."""
+    import re
     p = Path(scan_dir)
     ai_findings = []
-
     for subdir in ["raw/adversarial-reviewing", "raw/semantic-scan"]:
         d = p / subdir
         if not d.exists():
@@ -65,169 +82,116 @@ def load_ai_findings(scan_dir):
             if md_file.name.startswith("."):
                 continue
             text = md_file.read_text()
-            findings = _parse_ai_findings(text, source, md_file.name)
-            ai_findings.extend(findings)
+            blocks = re.split(r'\n(?=(?:Finding ID:|###?\s+(?:SEC|PERF|QUAL|CORR|ARCH|FINDING)-\d+))', text)
+            for block in blocks:
+                id_match = re.search(r'(?:Finding ID:\s*|###?\s+)((?:SEC|PERF|QUAL|CORR|ARCH|FINDING)-\d+)', block)
+                if not id_match:
+                    continue
+                f = {"id": id_match.group(1), "source": source, "origin": "ai",
+                     "category": "ai-review", "detected_by": [source]}
+                sev_match = re.search(r'Severity:\s*(\w+)', block, re.IGNORECASE)
+                sev = sev_match.group(1).lower() if sev_match else "medium"
+                f["severity"] = {"critical": "critical", "important": "high", "high": "high",
+                                 "medium": "medium", "minor": "low"}.get(sev, "medium")
+                title_match = re.search(r'Title:\s*(.+?)(?:\n|$)', block)
+                f["title"] = title_match.group(1).strip() if title_match else f["id"]
+                file_match = re.search(r'File:\s*`?([^\n`]+)`?', block)
+                f["file"] = file_match.group(1).strip() if file_match else ""
+                line_match = re.search(r'Lines?:\s*(\d+)', block)
+                f["line_start"] = int(line_match.group(1)) if line_match else 0
+                f["line_end"] = f["line_start"]
+                evidence_match = re.search(r'Evidence:\s*(.+?)(?=\n(?:Impact|Recommended|Finding ID:|\Z))', block, re.DOTALL)
+                f["description"] = evidence_match.group(1).strip()[:500] if evidence_match else ""
+                fix_match = re.search(r'Recommended fix:\s*(.+?)(?=\n(?:Finding ID:|\Z))', block, re.DOTALL)
+                f["recommendation"] = fix_match.group(1).strip()[:300] if fix_match else ""
+                f["triage"] = {}
+                ai_findings.append(f)
     return ai_findings
 
 
-def _parse_ai_findings(text, source, filename):
-    """Extract structured findings from AI review markdown."""
-    import re
-    findings = []
-    blocks = re.split(r'\n(?=(?:Finding ID:|###?\s+(?:SEC|PERF|QUAL|CORR|ARCH|FINDING)-\d+))', text)
-    for block in blocks:
-        finding = {}
-        id_match = re.search(r'(?:Finding ID:\s*|###?\s+)((?:SEC|PERF|QUAL|CORR|ARCH|FINDING)-\d+)', block)
-        if not id_match:
-            continue
-        finding["id"] = id_match.group(1)
-        finding["source"] = source
-
-        sev_match = re.search(r'Severity:\s*(\w+)', block, re.IGNORECASE)
-        if sev_match:
-            sev = sev_match.group(1).lower()
-            sev_map = {"critical": "critical", "important": "high", "high": "high",
-                       "medium": "medium", "minor": "low", "low": "low"}
-            finding["severity"] = sev_map.get(sev, "medium")
-        else:
-            finding["severity"] = "medium"
-
-        conf_match = re.search(r'Confidence:\s*(\w+)', block, re.IGNORECASE)
-        finding["confidence"] = conf_match.group(1).lower() if conf_match else "medium"
-
-        title_match = re.search(r'Title:\s*(.+?)(?:\n|$)', block)
-        finding["title"] = title_match.group(1).strip() if title_match else finding["id"]
-
-        file_match = re.search(r'File:\s*`?([^\n`]+)`?', block)
-        finding["file"] = file_match.group(1).strip() if file_match else ""
-
-        line_match = re.search(r'Lines?:\s*(\d+)', block)
-        finding["line_start"] = int(line_match.group(1)) if line_match else 0
-
-        evidence_match = re.search(r'Evidence:\s*(.+?)(?=\n(?:Impact|Recommended|Finding ID:|\Z))', block, re.DOTALL)
-        finding["description"] = evidence_match.group(1).strip()[:500] if evidence_match else ""
-
-        fix_match = re.search(r'Recommended fix:\s*(.+?)(?=\n(?:Finding ID:|\Z))', block, re.DOTALL)
-        finding["recommendation"] = fix_match.group(1).strip()[:300] if fix_match else ""
-
-        finding["category"] = "ai-review"
-        finding["detected_by"] = [source]
-        findings.append(finding)
-    return findings
-
-
-def shorten_path(filepath, repo_name=""):
-    parts = filepath.replace("\\", "/").split("/")
-    if repo_name:
-        short = repo_name.split("/")[-1]
-        for i, p in enumerate(parts):
-            if p == short:
-                return "/".join(parts[i + 1:])
-    for i, p in enumerate(parts):
-        if p in ("repo", "repos"):
-            return "/".join(parts[i + 1:]) if i + 1 < len(parts) else filepath
-    return filepath
-
-
-SEV_COLORS = {
-    "critical": "#dc3545",
-    "high": "#fd7e14",
-    "medium": "#ffc107",
-    "low": "#17a2b8",
-    "info": "#6c757d",
-}
-
-CAT_LABELS = {
-    "secrets": "Secrets",
-    "sca": "CVEs / SCA",
-    "k8s": "Kubernetes",
-    "config": "Configuration",
-    "cicd": "CI/CD",
-    "injection": "Injection",
-    "ai-review": "AI Review",
-    "other": "SAST",
-}
-
-
-def _sev_badge(sev):
-    color = SEV_COLORS.get(sev, "#6c757d")
-    return f'<span class="badge" style="background:{color}">{escape(sev.upper())}</span>'
-
-
-def _github_link(filepath, line_start, line_end, repo_full="", branch="main"):
-    """Build a GitHub permalink with file:line display."""
+def _github_url(filepath, line_start, line_end, repo_full, ref):
     if not repo_full or not filepath:
-        display = filepath
-        if line_start:
-            display = f"{filepath}:{line_start}"
-        return f"<code>{escape(display)}</code>"
+        return ""
     url_path = filepath
     parts = filepath.replace("\\", "/").split("/")
     for i, p in enumerate(parts):
         if p in ("repo", "repos"):
             url_path = "/".join(parts[i + 2:]) if i + 2 <= len(parts) else filepath
             break
-    display = f"{url_path}:{line_start}" if line_start else url_path
     frag = f"#L{line_start}" if line_start else ""
     if line_end and line_end != line_start and line_start:
         frag = f"#L{line_start}-L{line_end}"
-    url = f"https://github.com/{repo_full}/blob/{branch}/{url_path}{frag}"
-    return f'<a href="{url}" style="color:#58a6ff"><code>{escape(display)}</code></a>'
+    return f"https://github.com/{repo_full}/blob/{ref}/{url_path}{frag}"
 
 
-def _snippet_block(snippet):
-    """Render a code snippet in a collapsible pre block."""
-    if not snippet:
-        return ""
-    lines = snippet.strip().split("\n")
-    if len(lines) > 8:
-        lines = lines[:8] + ["..."]
-    code = escape("\n".join(lines))
-    return f'<pre style="background:#161b22;padding:8px;border-radius:4px;font-size:11px;margin:4px 0;overflow-x:auto;max-width:500px"><code>{code}</code></pre>'
+def _file_display(filepath, line_start):
+    url_path = filepath
+    parts = filepath.replace("\\", "/").split("/")
+    for i, p in enumerate(parts):
+        if p in ("repo", "repos"):
+            url_path = "/".join(parts[i + 2:]) if i + 2 <= len(parts) else filepath
+            break
+    return f"{url_path}:{line_start}" if line_start else url_path
 
 
-SEV_RANK = {"critical": 4, "high": 3, "medium": 2, "low": 1, "info": 0}
+def _render_card(f, repo_full, branch_ref, commit_ref):
+    sev = f.get("severity", "info")
+    color = SEV_COLORS.get(sev, "#6c757d")
+    ref = branch_ref if f.get("origin") == "ai" and branch_ref else (commit_ref or branch_ref or "main")
+    fpath = f.get("file", "")
+    line = f.get("line_start", 0)
+    line_end = f.get("line_end", 0)
+    url = _github_url(fpath, line, line_end, repo_full, ref)
+    display = _file_display(fpath, line)
+    source = f.get("source", "")
+    triage_status = f.get("triage", {}).get("status", "")
+    title_text = escape(f.get("title", "")[:100])
+    desc = escape(f.get("description", "")[:300])
+    snippet = f.get("snippet", "")
+    rec = escape(f.get("recommendation", "")[:300])
+    fid = escape(f.get("id", ""))
 
-TRIAGE_BADGES = {
-    "corroborated": '<span class="badge" style="background:#16a34a;margin-left:4px" title="Found by both SAST and AI">CORR</span>',
-    "ai-only": '<span class="badge" style="background:#2563eb;margin-left:4px" title="AI-only finding (logic bug)">AI</span>',
-    "sast-only": "",
-}
+    sev_badge = f'<span class="chip" style="background:{color};color:#fff">{sev.upper()}</span>'
 
+    triage_badge = ""
+    if triage_status in TRIAGE_LABELS:
+        label, tcolor, ttip = TRIAGE_LABELS[triage_status]
+        triage_badge = f'<span class="chip" style="background:{tcolor};color:#fff" title="{ttip}">{label}</span>'
 
-def _render_findings_table(findings, repo_short, show_detected_by=True,
-                           repo_full="", branch_ref="", commit_ref=""):
-    if not findings:
-        return "<p>No findings.</p>"
-    sorted_findings = sorted(findings, key=lambda f: -SEV_RANK.get(f.get("severity", ""), 0))
-    rows = []
-    for i, f in enumerate(sorted_findings[:100], 1):
-        fpath = f.get("file", "")
-        line = f.get("line_start", 0)
-        line_end = f.get("line_end", 0)
-        ref = branch_ref if f.get("origin") == "ai" and branch_ref else (commit_ref or branch_ref or "main")
-        file_link = _github_link(fpath, line, line_end, repo_full, ref)
-        ftitle = escape(f.get("title", "")[:80])
-        src = escape(f.get("source", ""))
-        det = ", ".join(f.get("detected_by", [src]))
-        rec = escape(f.get("recommendation", "")[:100])
-        sev = _sev_badge(f["severity"])
-        snippet = _snippet_block(f.get("snippet", ""))
-        triage_status = f.get("triage", {}).get("status", "")
-        triage_badge = TRIAGE_BADGES.get(triage_status, "")
-        det_col = f"<td>{escape(det)}</td>" if show_detected_by else ""
-        rows.append(f"<tr><td>{i}</td><td>{sev}{triage_badge}</td><td>{src}</td>"
-                     f"<td>{file_link}</td>"
-                     f"<td>{ftitle}{snippet}</td>{det_col}"
-                     f"<td>{rec}</td></tr>")
-    overflow = ""
-    if len(findings) > 100:
-        overflow = f"<p class='overflow'>+{len(findings) - 100} more findings not shown</p>"
-    det_header = "<th>Detected By</th>" if show_detected_by else ""
-    return f"""<table>
-<thead><tr><th>#</th><th>Severity</th><th>Tool</th><th>File</th><th>Title</th>{det_header}<th>Recommendation</th></tr></thead>
-<tbody>{''.join(rows)}</tbody>
-</table>{overflow}"""
+    src_badge = ""
+    if source:
+        src_color = SOURCE_COLORS.get(source, "#30363d")
+        src_text_color = "#fff" if src_color != "#30363d" else "#8b949e"
+        src_badge = f'<span class="chip" style="background:{src_color};color:{src_text_color}">{escape(source)}</span>'
+
+    file_link = f'<a href="{url}" class="file-link" target="_blank">{escape(display)} ↗</a>' if url else f'<code>{escape(display)}</code>'
+
+    snippet_html = ""
+    if snippet:
+        lines = snippet.strip().split("\n")
+        if len(lines) > 6:
+            lines = lines[:6] + ["..."]
+        snippet_html = f'<pre class="snippet"><code>{escape(chr(10).join(lines))}</code></pre>'
+
+    expand_id = f"expand-{fid}"
+    rec_html = ""
+    if rec:
+        rec_html = f'''<div class="card-expand" id="{expand_id}" style="display:none">
+            <div class="card-fix"><span class="fix-label">Fix:</span> {rec}</div>
+        </div>
+        <div class="card-toggle" onclick="var e=document.getElementById('{expand_id}');e.style.display=e.style.display==='none'?'block':'none';this.textContent=e.style.display==='none'?'Show fix ▾':'Hide fix ▴'">Show fix ▾</div>'''
+
+    return f'''<div class="finding-card" data-severity="{sev}" data-source="{escape(source)}" data-triage="{triage_status}" data-origin="{f.get('origin','sast')}" style="border-left-color:{color}">
+    <div class="card-header">
+        {sev_badge}{triage_badge}
+        <span class="card-title">{title_text}</span>
+        {src_badge}
+        <span class="card-file">{file_link}</span>
+    </div>
+    <div class="card-desc">{desc}</div>
+    {snippet_html}
+    {rec_html}
+</div>'''
 
 
 def generate_html(scan_dirs):
@@ -239,14 +203,12 @@ def generate_html(scan_dirs):
             all_data.append((d, findings, metadata))
 
     if not all_data:
-        return "<html><body><h1>No scan data found.</h1></body></html>"
+        return "<html><body style='background:#0d1117;color:#c9d1d9;padding:40px'><h1>No scan data found.</h1></body></html>"
 
-    multi = len(all_data) > 1
     all_findings = []
     for _, f, _ in all_data:
         all_findings.extend(f)
 
-    # AI findings: extract from triaged data, or load separately as fallback
     ai_findings = [f for f in all_findings if f.get("origin") == "ai"]
     if not ai_findings:
         for d in scan_dirs:
@@ -255,280 +217,251 @@ def generate_html(scan_dirs):
             all_findings.extend(loaded)
 
     first_meta = all_data[0][2]
-    title = "RHOAI Security Audit Report" if multi else f"Security Report: {first_meta.get('repo', 'Unknown')}"
-
-    sev_counts = Counter(f["severity"] for f in all_findings)
-    tool_counts = Counter(f.get("source", "unknown") for f in all_findings)
-    cat_counts = Counter(f.get("category", "other") for f in all_findings)
+    repo_full = first_meta.get("repo", "")
+    repo_short = repo_full.split("/")[-1] if repo_full else "Unknown"
+    branch_ref = first_meta.get("branch", "main")
+    commit_ref = first_meta.get("commit", "")
+    date = first_meta.get("date", first_meta.get("scan_date", ""))
     total = len(all_findings)
 
-    # Severity donut data
+    sev_counts = Counter(f["severity"] for f in all_findings)
+    source_counts = Counter(f.get("source", "unknown") for f in all_findings)
+    triage_counts = Counter(f.get("triage", {}).get("status", "sast-only") for f in all_findings)
+
+    # Donut
     donut_segments = []
     offset = 0
     for sev in ["critical", "high", "medium", "low", "info"]:
         count = sev_counts.get(sev, 0)
-        if count == 0:
+        if not count:
             continue
         pct = (count / max(total, 1)) * 100
-        color = SEV_COLORS[sev]
-        donut_segments.append(f"{color} {offset}% {offset + pct}%")
+        donut_segments.append(f"{SEV_COLORS[sev]} {offset}% {offset + pct}%")
         offset += pct
+    donut_gradient = ", ".join(donut_segments) if donut_segments else "#333 0% 100%"
 
-    donut_gradient = ", ".join(donut_segments) if donut_segments else "#eee 0% 100%"
+    # Stat cards
+    stat_cards = ""
+    for sev in ["critical", "high", "medium", "low", "info"]:
+        c = sev_counts.get(sev, 0)
+        stat_cards += f'<div class="stat-card" style="border-left:3px solid {SEV_COLORS[sev]}"><div class="stat-count" style="color:{SEV_COLORS[sev]}">{c}</div><div class="stat-label">{sev.title()}</div></div>'
 
-    # Sidebar nav items
-    nav_items = []
-    nav_items.append('<a href="#summary">Summary</a>')
-    nav_items.append('<a href="#tools">Tool Coverage</a>')
-    if any(f.get("category") == "sca" for f in all_findings):
-        nav_items.append('<a href="#cves">CVEs</a>')
-    if any(f.get("category") == "secrets" for f in all_findings):
-        nav_items.append('<a href="#secrets">Secrets</a>')
-    if ai_findings:
-        nav_items.append('<a href="#ai-review">AI Review</a>')
-    crit_findings = [f for f in all_findings if f["severity"] == "critical" and f.get("category") not in ("sca", "secrets")]
-    high_findings = [f for f in all_findings if f["severity"] == "high" and f.get("category") not in ("sca", "secrets")]
-    if crit_findings:
-        nav_items.append('<a href="#critical">Critical</a>')
-    if high_findings:
-        nav_items.append('<a href="#high">High</a>')
-    if multi:
-        for _, _, m in all_data:
-            repo = m.get("repo", "?").split("/")[-1]
-            nav_items.append(f'<a href="#repo-{escape(repo)}">{escape(repo)}</a>')
+    # Filter chips
+    sev_chips = ""
+    for sev in ["critical", "high", "medium", "low", "info"]:
+        c = sev_counts.get(sev, 0)
+        if not c:
+            continue
+        active = "active" if sev in ("critical", "high") else ""
+        sev_chips += f'<span class="filter-chip {active}" data-filter="severity" data-value="{sev}" style="--active-bg:{SEV_COLORS[sev]}" onclick="toggleFilter(this)">{sev.title()} {c}</span>'
 
-    # Tool x severity matrix: include all tools that ran (even with 0 findings)
+    source_chips = ""
+    for src in sorted(source_counts.keys()):
+        c = source_counts[src]
+        color = SOURCE_COLORS.get(src, "#30363d")
+        source_chips += f'<span class="filter-chip active" data-filter="source" data-value="{escape(src)}" style="--active-bg:{color}" onclick="toggleFilter(this)">{escape(src)} {c}</span>'
+
+    triage_chips = ""
+    for ts in ["corroborated", "ai-only", "sast-only"]:
+        c = triage_counts.get(ts, 0)
+        if not c:
+            continue
+        color = TRIAGE_LABELS.get(ts, ("", "#30363d", ""))[1] if ts in TRIAGE_LABELS else "#30363d"
+        triage_chips += f'<span class="filter-chip active" data-filter="triage" data-value="{ts}" style="--active-bg:{color}" onclick="toggleFilter(this)">{ts} {c}</span>'
+
+    # Finding cards (sorted by severity)
+    sorted_findings = sorted(all_findings, key=lambda f: (-SEV_RANK.get(f.get("severity", ""), 0), f.get("file", "")))
+    non_sca = [f for f in sorted_findings if f.get("category") != "sca"]
+    sca_findings = [f for f in sorted_findings if f.get("category") == "sca"]
+
+    finding_cards = "\n".join(_render_card(f, repo_full, branch_ref, commit_ref) for f in non_sca)
+
+    # Collapsible CVE section
+    sca_section = ""
+    if sca_findings:
+        sca_rows = []
+        for f in sca_findings[:100]:
+            sev_badge = f'<span class="chip" style="background:{SEV_COLORS.get(f["severity"],"#6c757d")};color:#fff;font-size:10px">{f["severity"].upper()}</span>'
+            url = _github_url(f.get("file", ""), f.get("line_start", 0), 0, repo_full, commit_ref or branch_ref)
+            display = _file_display(f.get("file", ""), f.get("line_start", 0))
+            link = f'<a href="{url}" class="file-link" target="_blank">{escape(display)}</a>' if url else f'<code>{escape(display)}</code>'
+            sca_rows.append(f'<tr><td>{sev_badge}</td><td>{escape(f.get("source",""))}</td><td>{link}</td><td>{escape(f.get("title","")[:60])}</td><td>{escape(f.get("recommendation","")[:80])}</td></tr>')
+        sca_section = f'''<details class="collapsible">
+    <summary><span class="collapse-title">Dependency Vulnerabilities</span> <span class="chip" style="background:#ffc107;color:#000">{len(sca_findings)} CVEs</span> <span class="collapse-hint">click to expand</span></summary>
+    <div class="collapse-body">
+        <table><thead><tr><th>Severity</th><th>Tool</th><th>File</th><th>Title</th><th>Fix</th></tr></thead>
+        <tbody>{"".join(sca_rows)}</tbody></table>
+    </div>
+</details>'''
+
+    # Collapsible tool coverage
     tool_sev = defaultdict(Counter)
     for f in all_findings:
         tool_sev[f.get("source", "unknown")][f["severity"]] += 1
-
-    # Add tools from metadata that had zero findings
     meta_findings = first_meta.get("findings", {})
-    for tool_key, count in meta_findings.items():
-        tool_name = tool_key.replace("_", "-")
-        if tool_name not in tool_sev:
-            tool_sev[tool_name] = Counter()
+    for tk, tc in meta_findings.items():
+        tn = tk.replace("_", "-")
+        if tn not in tool_sev:
+            tool_sev[tn] = Counter()
 
     tool_rows = []
     for tool in sorted(tool_sev.keys()):
         s = tool_sev[tool]
         t = sum(s.values())
-        cells = "".join(
-            f'<td class="sev-{sev}">{s.get(sev,0) or ""}</td>'
-            for sev in ["critical", "high", "medium", "low", "info"]
-        )
+        cells = "".join(f'<td class="sev-{sv}">{s.get(sv,0) or ""}</td>' for sv in ["critical","high","medium","low","info"])
         style = ' style="color:#4a5568"' if t == 0 else ""
         tool_rows.append(f"<tr{style}><td><strong>{escape(tool)}</strong></td>{cells}<td><strong>{t}</strong></td></tr>")
 
-    # Category summary
-    cat_rows = []
-    for cat, count in cat_counts.most_common():
-        label = CAT_LABELS.get(cat, cat)
-        cat_rows.append(f"<tr><td>{escape(label)}</td><td>{count}</td></tr>")
+    tools_section = f'''<details class="collapsible">
+    <summary><span class="collapse-title">Tool Coverage</span> <span class="chip" style="background:#30363d;color:#8b949e">{len(tool_sev)} tools</span> <span class="collapse-hint">click to expand</span></summary>
+    <div class="collapse-body">
+        <table><thead><tr><th>Tool</th><th>Crit</th><th>High</th><th>Med</th><th>Low</th><th>Info</th><th>Total</th></tr></thead>
+        <tbody>{"".join(tool_rows)}</tbody></table>
+    </div>
+</details>'''
 
-    # Metadata
-    meta_html = ""
-    if not multi:
-        m = first_meta
-        meta_html = f"""
-        <div class="meta-grid">
-            <div class="meta-item"><span class="meta-label">Repository</span><span class="meta-value">{escape(m.get('repo',''))}</span></div>
-            <div class="meta-item"><span class="meta-label">Branch</span><span class="meta-value">{escape(m.get('branch','main'))}</span></div>
-            <div class="meta-item"><span class="meta-label">Commit</span><span class="meta-value"><code>{escape(str(m.get('commit',''))[:8])}</code></span></div>
-            <div class="meta-item"><span class="meta-label">Date</span><span class="meta-value">{escape(str(m.get('date','')))}</span></div>
-            <div class="meta-item"><span class="meta-label">Tools</span><span class="meta-value">{len(tool_counts)}</span></div>
-            <div class="meta-item"><span class="meta-label">Total Findings</span><span class="meta-value">{total}</span></div>
-        </div>"""
-    else:
-        meta_html = f"""
-        <div class="meta-grid">
-            <div class="meta-item"><span class="meta-label">Repos Scanned</span><span class="meta-value">{len(all_data)}</span></div>
-            <div class="meta-item"><span class="meta-label">Date</span><span class="meta-value">{escape(str(first_meta.get('date','')))}</span></div>
-            <div class="meta-item"><span class="meta-label">Tools</span><span class="meta-value">{len(tool_counts)}</span></div>
-            <div class="meta-item"><span class="meta-label">Total Findings</span><span class="meta-value">{total}</span></div>
-        </div>"""
+    # Triage summary in footer
+    demoted = triage_counts.get("demoted", 0) + sum(1 for f in all_findings if f.get("triage", {}).get("demoted_from"))
+    footer_parts = [f"{total} findings", f"{len(tool_sev)} tools"]
+    if triage_counts.get("corroborated"):
+        footer_parts.append(f'{triage_counts["corroborated"]} corroborated')
+    if triage_counts.get("ai-only"):
+        footer_parts.append(f'{triage_counts["ai-only"]} AI-only')
+    if demoted:
+        footer_parts.append(f'{demoted} demoted')
 
-    # Severity stat cards
-    stat_cards = ""
-    for sev in ["critical", "high", "medium", "low", "info"]:
-        c = sev_counts.get(sev, 0)
-        color = SEV_COLORS[sev]
-        stat_cards += f'<div class="stat-card" style="border-left: 4px solid {color}"><div class="stat-count">{c}</div><div class="stat-label">{sev.title()}</div></div>'
-
-    # Finding sections
-    repo_short = first_meta.get("repo", "").split("/")[-1] if not multi else ""
-    repo_full = first_meta.get("repo", "") if not multi else ""
-    # SAST findings use commit SHA (exact match to scanned code)
-    # AI findings use branch name (agents read from local checkout at HEAD)
-    commit_ref = first_meta.get("commit", "")
-    branch_ref = first_meta.get("branch", "main")
-
-    sca_section = ""
-    sca_findings = [f for f in all_findings if f.get("category") == "sca"]
-    if sca_findings:
-        sca_section = f"""
-        <section id="cves">
-            <h2>Dependency Vulnerabilities ({len(sca_findings)})</h2>
-            {_render_findings_table(sca_findings, repo_short, repo_full=repo_full, branch_ref=branch_ref, commit_ref=commit_ref)}
-        </section>"""
-
-    secrets_section = ""
-    secret_findings = [f for f in all_findings if f.get("category") == "secrets"]
-    if secret_findings:
-        secrets_section = f"""
-        <section id="secrets">
-            <h2>Secrets Detected ({len(secret_findings)})</h2>
-            {_render_findings_table(secret_findings, repo_short, show_detected_by=False, repo_full=repo_full, branch_ref=branch_ref, commit_ref=commit_ref)}
-        </section>"""
-
-    # AI Review section
-    ai_section = ""
-    if ai_findings:
-        ai_rows = []
-        for i, f in enumerate(ai_findings, 1):
-            file_link = _github_link(f.get("file", ""), f.get("line_start", 0),
-                                     f.get("line_end", 0), repo_full, branch_ref)
-            sev = _sev_badge(f["severity"])
-            ftitle = escape(f.get("title", "")[:80])
-            snippet = _snippet_block(f.get("snippet", ""))
-            desc = escape(f.get("description", "")[:200])
-            rec = escape(f.get("recommendation", "")[:200])
-            ai_rows.append(f"""<tr><td>{escape(f['id'])}</td><td>{sev}</td><td>{file_link}</td>
-                <td>{ftitle}{snippet}</td><td style="font-size:12px">{desc}</td><td style="font-size:12px">{rec}</td></tr>""")
-        ai_section = f"""
-    <section id="ai-review">
-        <h2>AI Review Findings ({len(ai_findings)})</h2>
-        <p style="color:#8b949e;margin-bottom:12px">Findings from adversarial multi-agent review and semantic security analysis. These are code-level issues that require semantic understanding beyond pattern matching.</p>
-        <table>
-        <thead><tr><th>ID</th><th>Severity</th><th>File</th><th>Title</th><th>Evidence</th><th>Fix</th></tr></thead>
-        <tbody>{''.join(ai_rows)}</tbody>
-        </table>
-    </section>"""
-
-    crit_section = f"""
-    <section id="critical">
-        <h2>Critical Findings ({len(crit_findings)})</h2>
-        {_render_findings_table(crit_findings, repo_short, repo_full=repo_full, branch_ref=branch_ref, commit_ref=commit_ref)}
-    </section>""" if crit_findings else ""
-
-    high_section = f"""
-    <section id="high">
-        <h2>High Findings ({len(high_findings)})</h2>
-        {_render_findings_table(high_findings, repo_short, repo_full=repo_full, branch_ref=branch_ref, commit_ref=commit_ref)}
-    </section>""" if high_findings else ""
-
-    # Multi-repo sections
-    repo_sections = ""
-    if multi:
-        for _, findings, m in all_data:
-            repo = m.get("repo", "Unknown")
-            rs = repo.split("/")[-1]
-            sev = Counter(f["severity"] for f in findings)
-            crits = [f for f in findings if f["severity"] == "critical"]
-            repo_sections += f"""
-            <section id="repo-{escape(rs)}">
-                <h2>{escape(repo)}</h2>
-                <p>Critical: {sev.get('critical',0)} | High: {sev.get('high',0)} | Medium: {sev.get('medium',0)} | Low: {sev.get('low',0)} | Total: {len(findings)}</p>
-                {_render_findings_table(crits, rs, show_detected_by=False) if crits else '<p>No critical findings.</p>'}
-            </section>"""
-
-    return f"""<!DOCTYPE html>
+    return f'''<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{escape(title)}</title>
+<title>Security Report: {escape(repo_short)}</title>
 <style>
-* {{ margin: 0; padding: 0; box-sizing: border-box; }}
-body {{ font: 14px/1.6 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0d1117; color: #c9d1d9; display: flex; }}
-.sidebar {{ width: 220px; background: #161b22; border-right: 1px solid #30363d; padding: 20px 0; position: fixed; height: 100vh; overflow-y: auto; }}
-.sidebar h3 {{ padding: 10px 16px; font-size: 12px; text-transform: uppercase; color: #8b949e; letter-spacing: 1px; }}
-.sidebar a {{ display: block; padding: 8px 16px; color: #c9d1d9; text-decoration: none; font-size: 13px; border-left: 3px solid transparent; }}
-.sidebar a:hover {{ background: #21262d; border-left-color: #58a6ff; }}
-.main {{ margin-left: 220px; padding: 32px 40px; flex: 1; max-width: 1200px; }}
-h1 {{ font-size: 24px; margin-bottom: 8px; color: #f0f6fc; }}
-h2 {{ font-size: 18px; margin: 32px 0 16px; color: #f0f6fc; padding-bottom: 8px; border-bottom: 1px solid #30363d; }}
-.meta-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; margin: 16px 0 24px; }}
-.meta-item {{ background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 12px; }}
-.meta-label {{ display: block; font-size: 11px; text-transform: uppercase; color: #8b949e; margin-bottom: 4px; }}
-.meta-value {{ font-size: 16px; font-weight: 600; color: #f0f6fc; }}
-.stat-cards {{ display: flex; gap: 12px; margin: 16px 0; flex-wrap: wrap; }}
-.stat-card {{ background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 16px 20px; min-width: 100px; }}
-.stat-count {{ font-size: 28px; font-weight: 700; color: #f0f6fc; }}
-.stat-label {{ font-size: 12px; text-transform: uppercase; color: #8b949e; }}
-.donut-container {{ display: flex; align-items: center; gap: 24px; margin: 16px 0; }}
-.donut {{ width: 120px; height: 120px; border-radius: 50%; background: conic-gradient({donut_gradient}); position: relative; }}
-.donut::after {{ content: '{total}'; position: absolute; inset: 20px; background: #0d1117; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 22px; font-weight: 700; color: #f0f6fc; }}
-.legend {{ font-size: 13px; }}
-.legend-item {{ display: flex; align-items: center; gap: 8px; margin: 4px 0; }}
-.legend-dot {{ width: 12px; height: 12px; border-radius: 3px; }}
-table {{ width: 100%; border-collapse: collapse; margin: 8px 0 24px; font-size: 13px; }}
-th {{ background: #161b22; padding: 8px 10px; text-align: left; border-bottom: 2px solid #30363d; color: #8b949e; font-weight: 600; text-transform: uppercase; font-size: 11px; }}
-td {{ padding: 6px 10px; border-bottom: 1px solid #21262d; }}
-tr:hover {{ background: #161b22; }}
-code {{ background: #21262d; padding: 2px 6px; border-radius: 3px; font-size: 12px; }}
-.badge {{ display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; color: #fff; }}
-.sev-critical {{ color: #dc3545; font-weight: 600; }}
-.sev-high {{ color: #fd7e14; }}
-.sev-medium {{ color: #ffc107; }}
-.sev-low {{ color: #17a2b8; }}
-.sev-info {{ color: #6c757d; }}
-.overflow {{ color: #8b949e; font-style: italic; margin: 8px 0; }}
-section {{ margin-bottom: 24px; }}
-.table-wrap {{ overflow-x: auto; }}
-@media (max-width: 900px) {{
-  .sidebar {{ display: none; }}
-  .main {{ margin-left: 0; padding: 16px; }}
-  .meta-grid {{ grid-template-columns: repeat(2, 1fr); }}
-  .stat-cards {{ flex-wrap: wrap; }}
-  .donut-container {{ flex-direction: column; }}
+* {{ margin:0; padding:0; box-sizing:border-box; }}
+body {{ font:14px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; background:#0d1117; color:#c9d1d9; padding:24px 40px; max-width:1100px; margin:0 auto; }}
+a {{ color:#58a6ff; text-decoration:none; }}
+a:hover {{ text-decoration:underline; }}
+h1 {{ font-size:20px; color:#f0f6fc; margin-bottom:2px; }}
+.header-meta {{ color:#4a5568; font-size:12px; margin-bottom:16px; }}
+.stat-row {{ display:flex; gap:10px; margin:12px 0; align-items:center; flex-wrap:wrap; }}
+.stat-card {{ background:#161b22; border:1px solid #30363d; border-radius:6px; padding:10px 16px; text-align:center; }}
+.stat-count {{ font-size:24px; font-weight:700; }}
+.stat-label {{ font-size:10px; text-transform:uppercase; color:#8b949e; }}
+.donut {{ width:80px; height:80px; border-radius:50%; background:conic-gradient({donut_gradient}); position:relative; margin-left:auto; }}
+.donut::after {{ content:'{total}'; position:absolute; inset:14px; background:#0d1117; border-radius:50%; display:flex; align-items:center; justify-content:center; font-size:16px; font-weight:700; color:#f0f6fc; }}
+.filter-bar {{ display:flex; gap:4px; flex-wrap:wrap; padding:12px 0; border-bottom:1px solid #21262d; margin-bottom:12px; align-items:center; }}
+.filter-sep {{ color:#30363d; padding:0 4px; font-size:12px; }}
+.filter-label {{ font-size:10px; color:#8b949e; margin-right:4px; }}
+.filter-chip {{ padding:3px 10px; border-radius:12px; font-size:11px; font-weight:500; cursor:pointer; background:#30363d; color:#8b949e; border:1px solid transparent; transition:all .15s; user-select:none; }}
+.filter-chip.active {{ background:var(--active-bg,#30363d); color:#fff; border-color:rgba(255,255,255,.1); }}
+.filter-chip:hover {{ opacity:.85; }}
+.counter {{ font-size:11px; color:#8b949e; margin-bottom:10px; }}
+.finding-card {{ background:#161b22; border:1px solid #30363d; border-left:3px solid #6c757d; border-radius:6px; padding:12px 14px; margin-bottom:8px; transition:border-color .15s; }}
+.finding-card:hover {{ border-color:#58a6ff; }}
+.finding-card.hidden {{ display:none; }}
+.card-header {{ display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-bottom:4px; }}
+.card-title {{ color:#f0f6fc; font-size:13px; font-weight:500; }}
+.card-file {{ margin-left:auto; font-size:11px; }}
+.file-link {{ color:#58a6ff; font-size:11px; }}
+.card-desc {{ font-size:12px; color:#c9d1d9; margin-top:4px; }}
+.chip {{ display:inline-block; padding:1px 7px; border-radius:10px; font-size:10px; font-weight:600; color:#fff; white-space:nowrap; }}
+.snippet {{ background:#0d1117; border:1px solid #21262d; padding:6px 8px; border-radius:4px; font-size:11px; margin-top:6px; overflow-x:auto; color:#e6edf3; }}
+.card-expand {{ padding:8px 0 4px; border-top:1px solid #21262d; margin-top:8px; font-size:12px; }}
+.fix-label {{ color:#8b949e; font-weight:600; font-size:11px; text-transform:uppercase; }}
+.card-toggle {{ color:#58a6ff; font-size:11px; cursor:pointer; margin-top:4px; }}
+.card-toggle:hover {{ text-decoration:underline; }}
+.collapsible {{ background:#161b22; border:1px solid #30363d; border-radius:6px; margin:16px 0 8px; }}
+.collapsible summary {{ padding:10px 14px; cursor:pointer; display:flex; align-items:center; gap:8px; list-style:none; }}
+.collapsible summary::-webkit-details-marker {{ display:none; }}
+.collapsible summary::before {{ content:'▸'; color:#8b949e; font-size:14px; transition:transform .2s; }}
+.collapsible[open] summary::before {{ transform:rotate(90deg); }}
+.collapse-title {{ color:#f0f6fc; font-size:13px; font-weight:500; }}
+.collapse-hint {{ color:#4a5568; font-size:10px; margin-left:auto; }}
+.collapse-body {{ padding:0 14px 14px; }}
+table {{ width:100%; border-collapse:collapse; font-size:12px; }}
+th {{ background:#0d1117; padding:6px 8px; text-align:left; border-bottom:1px solid #30363d; color:#8b949e; font-weight:600; text-transform:uppercase; font-size:10px; }}
+td {{ padding:5px 8px; border-bottom:1px solid #161b22; }}
+tr:hover {{ background:#0d1117; }}
+code {{ background:#21262d; padding:1px 5px; border-radius:3px; font-size:11px; }}
+.sev-critical {{ color:#dc3545; }} .sev-high {{ color:#fd7e14; }} .sev-medium {{ color:#ffc107; }}
+.sev-low {{ color:#17a2b8; }} .sev-info {{ color:#6c757d; }}
+.footer {{ margin-top:32px; padding-top:12px; border-top:1px solid #21262d; color:#4a5568; font-size:11px; }}
+@media (max-width:700px) {{
+  body {{ padding:12px; }}
+  .stat-row {{ gap:6px; }}
+  .stat-card {{ padding:6px 10px; }}
+  .stat-count {{ font-size:18px; }}
+  .card-header {{ font-size:12px; }}
+  .donut {{ width:60px; height:60px; }}
+  .donut::after {{ inset:10px; font-size:13px; }}
 }}
 </style>
 </head>
 <body>
-<nav class="sidebar">
-    <h3>Navigation</h3>
-    {''.join(nav_items)}
-</nav>
-<div class="main">
-    <h1>{escape(title)}</h1>
-    {meta_html}
+<h1>Security Report: {escape(repo_short)}</h1>
+<div class="header-meta">{escape(repo_full)} | {escape(branch_ref)} | {escape(str(commit_ref)[:8])} | {escape(str(date)[:10])}</div>
 
-    <section id="summary">
-        <h2>Executive Summary</h2>
-        <div class="stat-cards">{stat_cards}</div>
-        <div class="donut-container">
-            <div class="donut"></div>
-            <div class="legend">
-                {''.join(f'<div class="legend-item"><div class="legend-dot" style="background:{SEV_COLORS[s]}"></div>{s.title()}: {sev_counts.get(s,0)}</div>' for s in ["critical","high","medium","low","info"] if sev_counts.get(s,0))}
-            </div>
-        </div>
-        <h3>Categories</h3>
-        <table><thead><tr><th>Category</th><th>Count</th></tr></thead>
-        <tbody>{''.join(cat_rows)}</tbody></table>
-    </section>
-
-    <section id="tools">
-        <h2>Tool Coverage</h2>
-        <table>
-        <thead><tr><th>Tool</th><th>Critical</th><th>High</th><th>Medium</th><th>Low</th><th>Info</th><th>Total</th></tr></thead>
-        <tbody>{''.join(tool_rows)}</tbody>
-        </table>
-    </section>
-
-    {ai_section}
-    {sca_section}
-    {secrets_section}
-    {crit_section}
-    {high_section}
-    {repo_sections}
-
-    <footer style="margin-top:40px; padding-top:16px; border-top:1px solid #30363d; color:#8b949e; font-size:12px;">
-        Generated by RHOAI Security Audit
-    </footer>
+<div class="stat-row">
+    {stat_cards}
+    <div class="donut" aria-label="{total} total findings"></div>
 </div>
+
+<div class="filter-bar">
+    <span class="filter-label">Severity:</span> {sev_chips}
+    <span class="filter-sep">|</span>
+    <span class="filter-label">Source:</span> {source_chips}
+    <span class="filter-sep">|</span>
+    <span class="filter-label">Triage:</span> {triage_chips}
+</div>
+<div class="counter" id="counter">Showing {len(non_sca)} of {total} findings</div>
+
+{finding_cards}
+
+{sca_section}
+{tools_section}
+
+<div class="footer">Generated by RHOAI Security Audit | {" | ".join(footer_parts)}</div>
+
+<script>
+(function() {{
+  var filters = {{}};
+  document.querySelectorAll('.filter-chip').forEach(function(chip) {{
+    var group = chip.dataset.filter;
+    var val = chip.dataset.value;
+    if (!filters[group]) filters[group] = {{}};
+    filters[group][val] = chip.classList.contains('active');
+  }});
+
+  window.toggleFilter = function(chip) {{
+    chip.classList.toggle('active');
+    var group = chip.dataset.filter;
+    var val = chip.dataset.value;
+    filters[group][val] = chip.classList.contains('active');
+    applyFilters();
+  }};
+
+  function applyFilters() {{
+    var cards = document.querySelectorAll('.finding-card');
+    var shown = 0;
+    cards.forEach(function(card) {{
+      var sevMatch = !filters.severity || Object.keys(filters.severity).length === 0 || filters.severity[card.dataset.severity];
+      var srcMatch = !filters.source || Object.keys(filters.source).length === 0 || filters.source[card.dataset.source];
+      var triMatch = !filters.triage || Object.keys(filters.triage).length === 0 || filters.triage[card.dataset.triage];
+      if (sevMatch && srcMatch && triMatch) {{
+        card.classList.remove('hidden');
+        shown++;
+      }} else {{
+        card.classList.add('hidden');
+      }}
+    }});
+    document.getElementById('counter').textContent = 'Showing ' + shown + ' of {total} findings';
+  }}
+
+  applyFilters();
+}})();
+</script>
 </body>
-</html>"""
+</html>'''
 
 
 def main():
