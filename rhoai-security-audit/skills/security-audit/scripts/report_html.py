@@ -337,20 +337,22 @@ def generate_html(scan_dirs):
         ai_minor = [f for f in ai_findings if f["severity"] not in ("critical", "high")]
         ai_rows = []
         for i, f in enumerate(ai_findings, 1):
-            fpath = escape(f.get("file", ""))
+            file_link = _github_link(f.get("file", ""), f.get("line_start", 0),
+                                     f.get("line_end", 0), repo_full, branch)
             sev = _sev_badge(f["severity"])
             ftitle = escape(f.get("title", "")[:80])
-            src = escape(f.get("source", ""))
+            snippet = _snippet_block(f.get("snippet", ""))
             desc = escape(f.get("description", "")[:200])
             rec = escape(f.get("recommendation", "")[:200])
-            ai_rows.append(f"""<tr><td>{escape(f['id'])}</td><td>{sev}</td><td><code>{fpath}</code></td>
-                <td>{ftitle}</td><td style="font-size:12px">{desc}</td><td style="font-size:12px">{rec}</td></tr>""")
+            line_display = f.get("line_start", "") or ""
+            ai_rows.append(f"""<tr><td>{escape(f['id'])}</td><td>{sev}</td><td>{file_link}</td><td>{line_display}</td>
+                <td>{ftitle}{snippet}</td><td style="font-size:12px">{desc}</td><td style="font-size:12px">{rec}</td></tr>""")
         ai_section = f"""
     <section id="ai-review">
         <h2>AI Review Findings ({len(ai_findings)})</h2>
         <p style="color:#8b949e;margin-bottom:12px">Findings from adversarial multi-agent review and semantic security analysis. These are code-level issues that require semantic understanding beyond pattern matching.</p>
         <table>
-        <thead><tr><th>ID</th><th>Severity</th><th>File</th><th>Title</th><th>Evidence</th><th>Fix</th></tr></thead>
+        <thead><tr><th>ID</th><th>Severity</th><th>File</th><th>Line</th><th>Title</th><th>Evidence</th><th>Fix</th></tr></thead>
         <tbody>{''.join(ai_rows)}</tbody>
         </table>
     </section>"""
