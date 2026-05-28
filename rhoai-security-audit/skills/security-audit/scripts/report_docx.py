@@ -101,18 +101,20 @@ def _add_hyperlink(paragraph, url, text):
     from docx.opc.constants import RELATIONSHIP_TYPE as RT
     from lxml import etree
     part = paragraph.part
-    r_id = part.relate_to(url, RT.HYPERLINK, is_external=True)
 
-    # Fix: python-docx encodes # to %23 in relationship targets.
-    # Patch the relationship XML directly to preserve fragment identifiers.
+    # Split URL from fragment: Word/Pages encode # in Target, so
+    # the fragment goes in w:anchor attribute instead
+    base_url = url
+    anchor = ""
     if "#" in url:
-        for rel in part.rels.values():
-            if rel.rId == r_id and "%23" in (rel.target_ref or ""):
-                rel._target = url
-                break
+        base_url, anchor = url.split("#", 1)
+
+    r_id = part.relate_to(base_url, RT.HYPERLINK, is_external=True)
 
     hyperlink = etree.SubElement(paragraph._element, qn("w:hyperlink"))
     hyperlink.set(qn("r:id"), r_id)
+    if anchor:
+        hyperlink.set(qn("w:anchor"), anchor)
     run_elem = etree.SubElement(hyperlink, qn("w:r"))
     rpr = etree.SubElement(run_elem, qn("w:rPr"))
     style = etree.SubElement(rpr, qn("w:rStyle"))
