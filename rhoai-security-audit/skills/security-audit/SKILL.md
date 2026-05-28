@@ -115,6 +115,7 @@ The triage step:
 python3 ${CLAUDE_SKILL_DIR}/scripts/report.py "${OUTPUT_DIR}" > "${OUTPUT_DIR}/executive-report.md"
 python3 ${CLAUDE_SKILL_DIR}/scripts/report_mustfix.py "${OUTPUT_DIR}" > "${OUTPUT_DIR}/must-fix-report.md"
 python3 ${CLAUDE_SKILL_DIR}/scripts/report_html.py "${OUTPUT_DIR}"  # MkDocs Material site -> security-report/
+python3 ${CLAUDE_SKILL_DIR}/scripts/report_standalone.py "${OUTPUT_DIR}" > "${OUTPUT_DIR}/security-report.html"  # self-contained
 python3 ${CLAUDE_SKILL_DIR}/scripts/report_docx.py "${OUTPUT_DIR}"
 ```
 
