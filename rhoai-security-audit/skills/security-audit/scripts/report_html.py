@@ -286,13 +286,9 @@ def generate_html(scan_dirs):
             display = _file_display(f.get("file", ""), f.get("line_start", 0))
             link = f'<a href="{url}" class="file-link" target="_blank">{escape(display)}</a>' if url else f'<code>{escape(display)}</code>'
             sca_rows.append(f'<tr><td>{sev_badge}</td><td>{escape(f.get("source",""))}</td><td>{link}</td><td>{escape(f.get("title","")[:60])}</td><td>{escape(f.get("recommendation","")[:80])}</td></tr>')
-        sca_section = f'''<details class="collapsible">
-    <summary><span class="collapse-title">Dependency Vulnerabilities</span> <span class="chip" style="background:#ffc107;color:#000">{len(sca_findings)} CVEs</span> <span class="collapse-hint">click to expand</span></summary>
-    <div class="collapse-body">
-        <table><thead><tr><th>Severity</th><th>Tool</th><th>File</th><th>Title</th><th>Fix</th></tr></thead>
-        <tbody>{"".join(sca_rows)}</tbody></table>
-    </div>
-</details>'''
+        sca_section = f'''<h3 style="color:#f0f6fc;margin-bottom:12px">Dependency Vulnerabilities ({len(sca_findings)} CVEs)</h3>
+    <table><thead><tr><th>Severity</th><th>Tool</th><th>File</th><th>Title</th><th>Fix</th></tr></thead>
+    <tbody>{"".join(sca_rows)}</tbody></table>'''
 
     # Collapsible tool coverage
     tool_sev = defaultdict(Counter)
@@ -312,13 +308,9 @@ def generate_html(scan_dirs):
         style = ' style="color:#4a5568"' if t == 0 else ""
         tool_rows.append(f"<tr{style}><td><strong>{escape(tool)}</strong></td>{cells}<td><strong>{t}</strong></td></tr>")
 
-    tools_section = f'''<details class="collapsible">
-    <summary><span class="collapse-title">Tool Coverage</span> <span class="chip" style="background:#30363d;color:#8b949e">{len(tool_sev)} tools</span> <span class="collapse-hint">click to expand</span></summary>
-    <div class="collapse-body">
-        <table><thead><tr><th>Tool</th><th>Crit</th><th>High</th><th>Med</th><th>Low</th><th>Info</th><th>Total</th></tr></thead>
-        <tbody>{"".join(tool_rows)}</tbody></table>
-    </div>
-</details>'''
+    tools_section = f'''<h3 style="color:#f0f6fc;margin-bottom:12px">Tool Coverage ({len(tool_sev)} tools)</h3>
+    <table><thead><tr><th>Tool</th><th>Crit</th><th>High</th><th>Med</th><th>Low</th><th>Info</th><th>Total</th></tr></thead>
+    <tbody>{"".join(tool_rows)}</tbody></table>'''
 
     # Triage summary in footer
     demoted = triage_counts.get("demoted", 0) + sum(1 for f in all_findings if f.get("triage", {}).get("demoted_from"))
@@ -386,6 +378,13 @@ tr:hover {{ background:#0d1117; }}
 code {{ background:#21262d; padding:1px 5px; border-radius:3px; font-size:11px; }}
 .sev-critical {{ color:#dc3545; }} .sev-high {{ color:#fd7e14; }} .sev-medium {{ color:#ffc107; }}
 .sev-low {{ color:#17a2b8; }} .sev-info {{ color:#6c757d; }}
+.tabs {{ display:flex; gap:0; border-bottom:2px solid #21262d; margin:16px 0 0; }}
+.tab {{ padding:8px 20px; font-size:13px; font-weight:500; color:#8b949e; cursor:pointer; border-bottom:2px solid transparent; margin-bottom:-2px; transition:all .15s; user-select:none; }}
+.tab:hover {{ color:#c9d1d9; }}
+.tab.active {{ color:#f0f6fc; border-bottom-color:#58a6ff; }}
+.tab-badge {{ background:#30363d; color:#8b949e; padding:1px 6px; border-radius:8px; font-size:10px; margin-left:4px; }}
+.tab-panel {{ display:none; padding-top:12px; }}
+.tab-panel.active {{ display:block; }}
 .footer {{ margin-top:32px; padding-top:12px; border-top:1px solid #21262d; color:#4a5568; font-size:11px; }}
 @media (max-width:700px) {{
   body {{ padding:12px; }}
@@ -407,21 +406,39 @@ code {{ background:#21262d; padding:1px 5px; border-radius:3px; font-size:11px; 
     <div class="donut" aria-label="{total} total findings"></div>
 </div>
 
-<div class="filter-bar">
-    <div class="filter-row"><span class="filter-label">Severity:</span> {sev_chips}</div>
-    <div class="filter-row"><span class="filter-label">Source:</span> {source_chips}</div>
-    <div class="filter-row"><span class="filter-label">Triage:</span> {triage_chips}</div>
+<div class="tabs">
+    <div class="tab active" onclick="switchTab('findings',this)">Findings <span class="tab-badge">{len(non_sca)}</span></div>
+    <div class="tab" onclick="switchTab('deps',this)">Dependencies <span class="tab-badge">{len(sca_findings)}</span></div>
+    <div class="tab" onclick="switchTab('tools',this)">Tools <span class="tab-badge">{len(tool_sev)}</span></div>
 </div>
-<div class="counter" id="counter">Showing {len(non_sca)} of {total} findings</div>
 
-{finding_cards}
+<div class="tab-panel active" id="panel-findings">
+    <div class="filter-bar">
+        <div class="filter-row"><span class="filter-label">Severity:</span> {sev_chips}</div>
+        <div class="filter-row"><span class="filter-label">Source:</span> {source_chips}</div>
+        <div class="filter-row"><span class="filter-label">Triage:</span> {triage_chips}</div>
+    </div>
+    <div class="counter" id="counter">Showing {len(non_sca)} of {total} findings</div>
+    {finding_cards}
+</div>
 
-{sca_section}
-{tools_section}
+<div class="tab-panel" id="panel-deps">
+    {sca_section if sca_section else '<p style="color:#8b949e;padding:16px 0">No dependency vulnerabilities found.</p>'}
+</div>
+
+<div class="tab-panel" id="panel-tools">
+    {tools_section}
+</div>
 
 <div class="footer">Generated by RHOAI Security Audit | {" | ".join(footer_parts)}</div>
 
 <script>
+window.switchTab = function(name, el) {{
+  document.querySelectorAll('.tab-panel').forEach(function(p) {{ p.classList.remove('active'); }});
+  document.querySelectorAll('.tab').forEach(function(t) {{ t.classList.remove('active'); }});
+  document.getElementById('panel-' + name).classList.add('active');
+  el.classList.add('active');
+}};
 (function() {{
   var filters = {{}};
   document.querySelectorAll('.filter-chip').forEach(function(chip) {{
