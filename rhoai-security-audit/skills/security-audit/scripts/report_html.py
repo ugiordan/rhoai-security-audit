@@ -217,6 +217,9 @@ hide:
   - navigation
 ---
 
+!!! danger "CONFIDENTIAL"
+    This report may contain undisclosed security findings. Do not share outside authorized personnel. Do not post in public channels.
+
 # Security Report: {repo_short}
 
 | | |

@@ -40,7 +40,7 @@ def load_sast_findings(scan_dir):
 def parse_ai_findings(scan_dir):
     p = Path(scan_dir)
     ai_findings = []
-    for subdir in ["raw/adversarial-reviewing", "raw/semantic-scan"]:
+    for subdir in ["raw/adversarial-reviewing", "raw/adversarial-review", "raw/semantic-scan"]:
         d = p / subdir
         if not d.exists():
             continue
@@ -67,6 +67,19 @@ def _extract_findings(text, source):
         f = _parse_adversarial_block(block, id_match.group(1), source)
         if f:
             findings.append(f)
+
+    # Try bracket-severity format: "## [CRITICAL] Title" or "### [HIGH] Title"
+    if not findings:
+        blocks = re.split(r'\n(?=##[#]?\s+\[(?:CRITICAL|HIGH|MEDIUM|LOW|INFO)\])', text)
+        for i, block in enumerate(blocks):
+            heading = re.match(
+                r'##[#]?\s+\[(CRITICAL|HIGH|MEDIUM|LOW|INFO)\]\s+(.+?)(?:\n|$)', block)
+            if not heading:
+                continue
+            f = _parse_bracket_block(block, heading.group(2).strip(),
+                                     heading.group(1).lower(), source, i + 1)
+            if f:
+                findings.append(f)
 
     # Try semantic-scan format: "### N. Title" with **Severity**: HIGH
     if not findings:
@@ -116,6 +129,55 @@ def _parse_adversarial_block(block, finding_id, source):
     conf_match = re.search(r'Confidence:\s*(\w+)', block, re.IGNORECASE)
     f["confidence"] = {"high": 0.9, "medium": 0.7, "low": 0.5}.get(
         conf_match.group(1).lower() if conf_match else "medium", 0.7)
+
+    return f
+
+
+def _parse_bracket_block(block, title, severity, source, index):
+    """Parse bracket-severity format: ## [CRITICAL] Title with **Field**: value and markdown sections."""
+    prefix = "SEC" if source == "adversarial-review" else "SCAN"
+    fid = f"{prefix}-{index:03d}"
+    f = {"id": fid, "source": source, "origin": "ai",
+         "category": "ai-review", "detected_by": [source], "triage": {},
+         "title": title, "rule_id": fid, "severity": severity}
+
+    loc_match = re.search(r'\*\*Location\*\*:\s*`?([^`\n]+)`?', block)
+    if not loc_match:
+        loc_match = re.search(r'- \*\*Location\*\*:\s*`?([^`\n]+)`?', block)
+    if loc_match:
+        raw = loc_match.group(1).strip().split(",")[0].split("(")[0].strip()
+        f["file"] = raw
+    else:
+        f["file"] = ""
+
+    line_match = re.search(r':(\d+)', f.get("file", ""))
+    if line_match:
+        f["line_start"] = int(line_match.group(1))
+        f["file"] = f["file"].split(":")[0]
+    else:
+        f["line_start"] = 0
+    f["line_end"] = f["line_start"]
+
+    desc_match = re.search(
+        r'\*\*Description\*\*:?\s*\n?(.*?)(?=\n\*\*(?:Impact|Evidence|Recommendation|Data Flow)|---|\Z)',
+        block, re.DOTALL | re.IGNORECASE)
+    f["description"] = desc_match.group(1).strip()[:500] if desc_match else ""
+
+    impact_match = re.search(
+        r'\*\*Impact\*\*:?\s*\n?(.*?)(?=\n\*\*(?:Evidence|Recommendation)|---|\Z)',
+        block, re.DOTALL | re.IGNORECASE)
+    if impact_match and not f["description"]:
+        f["description"] = impact_match.group(1).strip()[:500]
+
+    snippet_match = re.search(r'```[a-z]*\n(.*?)```', block, re.DOTALL)
+    f["snippet"] = snippet_match.group(1).strip()[:500] if snippet_match else ""
+
+    rec_match = re.search(
+        r'\*\*Recommendation\*\*:?\s*\n?(.*?)(?=\n---|\n##|\Z)',
+        block, re.DOTALL | re.IGNORECASE)
+    f["recommendation"] = rec_match.group(1).strip()[:300] if rec_match else ""
+
+    f["confidence"] = 0.8
 
     return f
 

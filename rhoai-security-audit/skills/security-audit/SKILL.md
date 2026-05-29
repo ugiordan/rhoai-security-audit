@@ -118,6 +118,7 @@ python3 ${CLAUDE_SKILL_DIR}/scripts/report_html.py "${OUTPUT_DIR}"  # MkDocs Mat
 python3 ${CLAUDE_SKILL_DIR}/scripts/report_standalone.py "${OUTPUT_DIR}" > "${OUTPUT_DIR}/security-report.html"  # self-contained
 python3 ${CLAUDE_SKILL_DIR}/scripts/report_mustfix.py "${OUTPUT_DIR}" --html > "${OUTPUT_DIR}/must-fix-report.html"
 python3 ${CLAUDE_SKILL_DIR}/scripts/report_docx.py "${OUTPUT_DIR}"
+python3 ${CLAUDE_SKILL_DIR}/scripts/report_docx.py "${OUTPUT_DIR}" --must-fix
 ```
 
 All reports. Every run. No exceptions.

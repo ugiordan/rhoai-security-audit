@@ -86,7 +86,7 @@ def load_ai_findings(scan_dir):
     import re
     p = Path(scan_dir)
     ai_findings = []
-    for subdir in ["raw/adversarial-reviewing", "raw/semantic-scan"]:
+    for subdir in ["raw/adversarial-reviewing", "raw/adversarial-review", "raw/semantic-scan"]:
         d = p / subdir
         if not d.exists():
             continue
@@ -95,31 +95,121 @@ def load_ai_findings(scan_dir):
             if md_file.name.startswith("."):
                 continue
             text = md_file.read_text()
-            blocks = re.split(r'\n(?=(?:Finding ID:|###?\s+(?:SEC|PERF|QUAL|CORR|ARCH|FINDING)-\d+))', text)
-            for block in blocks:
-                id_match = re.search(r'(?:Finding ID:\s*|###?\s+)((?:SEC|PERF|QUAL|CORR|ARCH|FINDING)-\d+)', block)
-                if not id_match:
-                    continue
-                f = {"id": id_match.group(1), "source": source, "origin": "ai",
-                     "category": "ai-review", "detected_by": [source]}
-                sev_match = re.search(r'Severity:\s*(\w+)', block, re.IGNORECASE)
-                sev = sev_match.group(1).lower() if sev_match else "medium"
-                f["severity"] = {"critical": "critical", "important": "high", "high": "high",
-                                 "medium": "medium", "minor": "low"}.get(sev, "medium")
-                title_match = re.search(r'Title:\s*(.+?)(?:\n|$)', block)
-                f["title"] = title_match.group(1).strip() if title_match else f["id"]
-                file_match = re.search(r'File:\s*`?([^\n`]+)`?', block)
-                f["file"] = file_match.group(1).strip() if file_match else ""
-                line_match = re.search(r'Lines?:\s*(\d+)', block)
-                f["line_start"] = int(line_match.group(1)) if line_match else 0
-                f["line_end"] = f["line_start"]
-                evidence_match = re.search(r'Evidence:\s*(.+?)(?=\n(?:Impact|Recommended|Finding ID:|\Z))', block, re.DOTALL)
-                f["description"] = evidence_match.group(1).strip()[:500] if evidence_match else ""
-                fix_match = re.search(r'Recommended fix:\s*(.+?)(?=\n(?:Finding ID:|\Z))', block, re.DOTALL)
-                f["recommendation"] = fix_match.group(1).strip()[:300] if fix_match else ""
-                f["triage"] = {}
-                ai_findings.append(f)
+            parsed = _parse_ai_md(text, source)
+            ai_findings.extend(parsed)
     return ai_findings
+
+
+def _parse_ai_md(text, source):
+    import re
+    findings = []
+
+    # Format 1: "Finding ID: SEC-001" or "### SEC-001"
+    blocks = re.split(r'\n(?=(?:Finding ID:|###?\s+(?:SEC|PERF|QUAL|CORR|ARCH|FINDING)-\d+))', text)
+    for block in blocks:
+        id_match = re.search(r'(?:Finding ID:\s*|###?\s+)((?:SEC|PERF|QUAL|CORR|ARCH|FINDING)-\d+)', block)
+        if not id_match:
+            continue
+        f = {"id": id_match.group(1), "source": source, "origin": "ai",
+             "category": "ai-review", "detected_by": [source]}
+        sev_match = re.search(r'Severity:\s*(\w+)', block, re.IGNORECASE)
+        sev = sev_match.group(1).lower() if sev_match else "medium"
+        f["severity"] = {"critical": "critical", "important": "high", "high": "high",
+                         "medium": "medium", "minor": "low"}.get(sev, "medium")
+        title_match = re.search(r'Title:\s*(.+?)(?:\n|$)', block)
+        f["title"] = title_match.group(1).strip() if title_match else f["id"]
+        file_match = re.search(r'File:\s*`?([^\n`]+)`?', block)
+        f["file"] = file_match.group(1).strip() if file_match else ""
+        line_match = re.search(r'Lines?:\s*(\d+)', block)
+        f["line_start"] = int(line_match.group(1)) if line_match else 0
+        f["line_end"] = f["line_start"]
+        evidence_match = re.search(r'Evidence:\s*(.+?)(?=\n(?:Impact|Recommended|Finding ID:|\Z))', block, re.DOTALL)
+        f["description"] = evidence_match.group(1).strip()[:500] if evidence_match else ""
+        fix_match = re.search(r'Recommended fix:\s*(.+?)(?=\n(?:Finding ID:|\Z))', block, re.DOTALL)
+        f["recommendation"] = fix_match.group(1).strip()[:300] if fix_match else ""
+        snippet_match = re.search(r'```[a-z]*\n(.*?)```', block, re.DOTALL)
+        f["snippet"] = snippet_match.group(1).strip()[:500] if snippet_match else ""
+        f["triage"] = {}
+        findings.append(f)
+
+    # Format 2: "## [CRITICAL] Title" or "### [HIGH] Title"
+    if not findings:
+        blocks = re.split(r'\n(?=##[#]?\s+\[(?:CRITICAL|HIGH|MEDIUM|LOW|INFO)\])', text)
+        for i, block in enumerate(blocks):
+            heading = re.match(r'##[#]?\s+\[(CRITICAL|HIGH|MEDIUM|LOW|INFO)\]\s+(.+?)(?:\n|$)', block)
+            if not heading:
+                continue
+            sev = heading.group(1).lower()
+            title = heading.group(2).strip()
+            prefix = "SEC" if source == "adversarial-review" else "SCAN"
+            fid = f"{prefix}-{i+1:03d}"
+            f = {"id": fid, "source": source, "origin": "ai", "category": "ai-review",
+                 "detected_by": [source], "title": title, "severity": sev, "rule_id": fid}
+            loc_match = re.search(r'(?:- )?\*\*Location\*\*:\s*`?([^`\n]+)`?', block)
+            if loc_match:
+                raw = loc_match.group(1).strip().split(",")[0].split("(")[0].strip()
+                f["file"] = raw
+            else:
+                f["file"] = ""
+            line_match = re.search(r':(\d+)', f.get("file", ""))
+            if line_match:
+                f["line_start"] = int(line_match.group(1))
+                f["file"] = f["file"].split(":")[0]
+            else:
+                f["line_start"] = 0
+            f["line_end"] = f["line_start"]
+            desc_match = re.search(
+                r'\*\*Description\*\*:?\s*\n?(.*?)(?=\n\*\*(?:Impact|Evidence|Recommendation|Data Flow)|---|\Z)',
+                block, re.DOTALL | re.IGNORECASE)
+            f["description"] = desc_match.group(1).strip()[:500] if desc_match else ""
+            snippet_match = re.search(r'```[a-z]*\n(.*?)```', block, re.DOTALL)
+            f["snippet"] = snippet_match.group(1).strip()[:500] if snippet_match else ""
+            rec_match = re.search(
+                r'\*\*Recommendation\*\*:?\s*\n?(.*?)(?=\n---|\n##|\Z)',
+                block, re.DOTALL | re.IGNORECASE)
+            f["recommendation"] = rec_match.group(1).strip()[:300] if rec_match else ""
+            f["triage"] = {}
+            findings.append(f)
+
+    # Format 3: "### N. Title" with **Severity**: HIGH
+    if not findings:
+        blocks = re.split(r'\n(?=### \d+\.)', text)
+        for i, block in enumerate(blocks):
+            heading = re.match(r'### \d+\.\s+(.+?)(?:\n|$)', block)
+            if not heading:
+                continue
+            f = {"id": f"SCAN-{i+1:03d}", "source": source, "origin": "ai",
+                 "category": "ai-review", "detected_by": [source],
+                 "title": heading.group(1).strip(), "rule_id": f"SCAN-{i+1:03d}"}
+            sev_match = re.search(r'\*\*Severity\*\*:\s*(\w+)', block, re.IGNORECASE)
+            sev = sev_match.group(1).lower() if sev_match else "medium"
+            f["severity"] = {"critical": "critical", "high": "high",
+                             "medium": "medium", "low": "low"}.get(sev, "medium")
+            file_match = re.search(r'\*\*(?:File|Location)\*\*:\s*`?([^`\n]+)`?', block)
+            if file_match:
+                raw = file_match.group(1).strip().split(",")[0].split("(")[0].strip()
+                f["file"] = raw
+            else:
+                f["file"] = ""
+            line_match = re.search(r':(\d+)', f.get("file", ""))
+            if line_match:
+                f["line_start"] = int(line_match.group(1))
+                f["file"] = f["file"].split(":")[0]
+            else:
+                f["line_start"] = 0
+            f["line_end"] = f["line_start"]
+            desc_match = re.search(r'(?:Description|Impact|Details).*?:\s*(.+?)(?=\n\*\*|\n###|\Z)',
+                                   block, re.DOTALL | re.IGNORECASE)
+            f["description"] = desc_match.group(1).strip()[:500] if desc_match else ""
+            snippet_match = re.search(r'```[a-z]*\n(.*?)```', block, re.DOTALL)
+            f["snippet"] = snippet_match.group(1).strip()[:500] if snippet_match else ""
+            rec_match = re.search(r'(?:Remediation|Fix|Recommendation).*?:\s*(.+?)(?=\n###|\Z)',
+                                  block, re.DOTALL | re.IGNORECASE)
+            f["recommendation"] = rec_match.group(1).strip()[:300] if rec_match else ""
+            f["triage"] = {}
+            findings.append(f)
+
+    return findings
 
 
 def _github_url(filepath, line_start, line_end, repo_full, ref):
@@ -416,12 +506,21 @@ code {{ background:#21262d; padding:1px 5px; border-radius:3px; font-size:11px; 
 </style>
 </head>
 <body>
+<div style="background:#dc354520;border:1px solid #dc3545;border-radius:6px;padding:10px 14px;margin-bottom:16px;font-size:12px;color:#f0f6fc">
+    <strong style="color:#dc3545">CONFIDENTIAL</strong> — This report may contain undisclosed security findings. Do not share outside authorized personnel. Do not post in public channels.
+</div>
 <h1>Security Report: {escape(repo_short)}</h1>
 <div class="header-meta">{escape(repo_full)} | {escape(branch_ref)} | {escape(str(commit_ref)[:8])} | {escape(str(date)[:10])}</div>
 
 <div class="stat-row">
     {stat_cards}
     <div class="donut" aria-label="{total} total findings"></div>
+</div>
+
+<div style="display:flex;gap:16px;flex-wrap:wrap;font-size:11px;color:#8b949e;margin:8px 0 4px;padding:6px 0;border-bottom:1px solid #21262d">
+    <span><span class="chip" style="background:#16a34a">CORR</span> Corroborated: found by both SAST tools and AI review</span>
+    <span><span class="chip" style="background:#2563eb">AI</span> AI-only: logic/semantic issue found by AI review only</span>
+    <span style="color:#4a5568">No badge = SAST tool finding only</span>
 </div>
 
 <div class="tabs">

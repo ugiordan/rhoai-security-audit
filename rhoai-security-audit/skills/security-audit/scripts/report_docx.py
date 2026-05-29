@@ -59,6 +59,15 @@ def load_metadata(scan_dir):
     f = p / "scan-metadata.json"
     if f.exists():
         meta = json.loads(f.read_text())
+    ss = p / "raw" / "security-summary.json"
+    if ss.exists() and not meta.get("repo"):
+        try:
+            summary = json.loads(ss.read_text())
+            meta.setdefault("repo", summary.get("repo", ""))
+            meta.setdefault("date", summary.get("scan_date", ""))
+            meta.setdefault("findings", summary.get("findings", {}))
+        except Exception:
+            pass
     ci = p / "raw" / "commit-info.json"
     if ci.exists():
         try:
@@ -69,6 +78,18 @@ def load_metadata(scan_dir):
                 meta["commit"] = info.get("commit_sha", "")
         except Exception:
             pass
+    if not meta.get("repo"):
+        parts = Path(scan_dir).resolve().parts
+        for i, part in enumerate(parts):
+            if part == "output" and i + 1 < len(parts):
+                meta["repo"] = f"opendatahub-io/{parts[i + 1]}"
+                break
+    if not meta.get("date"):
+        parts = Path(scan_dir).resolve().parts
+        for part in parts:
+            if len(part) == 10 and part[4] == "-" and part[7] == "-":
+                meta["date"] = part
+                break
     return meta
 
 
@@ -409,7 +430,64 @@ def _add_tool_coverage_table(doc, tool_sev):
         run.font.bold = True
 
 
-def generate_docx(scan_dir, output_path):
+def _add_finding_detail(doc, f, index, repo_full, branch_ref, commit_ref):
+    """Render a single finding as a detailed section with metadata, description, snippet, and fix."""
+    sev = f.get("severity", "")
+    triage = f.get("triage", {}).get("status", "") if isinstance(f.get("triage"), dict) else ""
+    triage_label = {"corroborated": " [CORR]", "ai-only": " [AI]"}.get(triage, "")
+    title = f.get("title", f.get("id", ""))
+    file_display = _file_display(f.get("file", ""), f.get("line_start", 0))
+
+    _add_heading(doc, f"Finding {index}: {title} ({sev.upper()}{triage_label})", level=2)
+
+    rule_id = f.get("rule_id", "")
+    source = f.get("source", "")
+    category = f.get("category", "")
+    ref = branch_ref if f.get("origin") == "ai" else (commit_ref or branch_ref)
+    url = _github_url(f.get("file", ""), f.get("line_start", 0),
+                      f.get("line_end", 0), repo_full, ref)
+
+    p = doc.add_paragraph()
+    run = p.add_run("File: ")
+    run.font.name = BODY_FONT
+    run.font.size = Pt(10)
+    run.font.bold = True
+    if url:
+        _add_hyperlink(p, url, file_display)
+    else:
+        run = p.add_run(file_display)
+        run.font.name = MONO_FONT
+        run.font.size = Pt(9)
+
+    meta_parts = []
+    if source:
+        meta_parts.append(f"Source: {source}")
+    if rule_id and rule_id != title:
+        meta_parts.append(f"Rule: {rule_id}")
+    if category:
+        meta_parts.append(f"Category: {category}")
+    if meta_parts:
+        _add_body(doc, " | ".join(meta_parts), color=RH_GREY)
+
+    desc = f.get("description", "")
+    if not desc or desc == title:
+        desc = f"{title} detected in {file_display} by {source}."
+        if rule_id:
+            desc += f" Rule: {rule_id}."
+    _add_rich_text(doc, desc)
+
+    snippet = f.get("snippet", "")
+    if snippet:
+        _add_code(doc, snippet[:500])
+
+    rec = f.get("recommendation", "")
+    if rec:
+        _add_recommendation(doc, rec[:600])
+
+    doc.add_paragraph()
+
+
+def generate_docx(scan_dir, output_path, must_fix=False):
     findings = load_findings(scan_dir)
     metadata = load_metadata(scan_dir)
 
@@ -418,29 +496,73 @@ def generate_docx(scan_dir, output_path):
     branch_ref = metadata.get("branch", "main")
     commit_ref = metadata.get("commit", "")
     date = metadata.get("date", metadata.get("scan_date", ""))
-    total = len(findings)
 
+    if must_fix:
+        findings = [f for f in findings if SEV_RANK.get(f.get("severity", ""), 0) >= SEV_RANK["high"]]
+
+    total = len(findings)
     sev_counts = Counter(f["severity"] for f in findings)
-    triage_counts = Counter(f.get("triage", {}).get("status", "sast-only") for f in findings)
+    triage_counts = Counter(
+        f.get("triage", {}).get("status", "sast-only") if isinstance(f.get("triage"), dict) else "sast-only"
+        for f in findings)
 
     doc = Document()
 
     # --- Cover Page ---
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.LEFT
-    run = p.add_run("Security Audit Report")
+    title_text = "Must-Fix Security Report" if must_fix else "Security Audit Report"
+    run = p.add_run(title_text)
     run.font.name = HEADING_FONT
     run.font.size = Pt(36)
     run.font.color.rgb = RH_DARK
 
+    # Repo as hyperlink
     p = doc.add_paragraph()
-    run = p.add_run(repo_full)
-    run.font.name = HEADING_FONT
-    run.font.size = Pt(18)
-    run.font.color.rgb = RH_GREY
+    if repo_full and repo_full != "Unknown":
+        _add_hyperlink(p, f"https://github.com/{repo_full}", repo_full)
+    else:
+        run = p.add_run(repo_full)
+        run.font.name = HEADING_FONT
+        run.font.size = Pt(18)
+        run.font.color.rgb = RH_GREY
 
-    _add_body(doc, f"Branch: {branch_ref} | Commit: {str(commit_ref)[:8]} | Date: {str(date)[:10]}")
+    # Branch + Commit + Date as labeled hyperlinks
+    p = doc.add_paragraph()
+    run = p.add_run("Branch: ")
+    _set_font(run, BODY_FONT, 10, bold=True)
+    if repo_full and repo_full != "Unknown":
+        _add_hyperlink(p, f"https://github.com/{repo_full}/tree/{branch_ref}", branch_ref)
+    else:
+        run = p.add_run(branch_ref)
+        _set_font(run, MONO_FONT, 10)
+
+    run = p.add_run("  |  Commit: ")
+    _set_font(run, BODY_FONT, 10, bold=True)
+    commit_short = str(commit_ref)[:8]
+    if repo_full and repo_full != "Unknown" and commit_ref:
+        _add_hyperlink(p, f"https://github.com/{repo_full}/commit/{commit_ref}", commit_short)
+    else:
+        run = p.add_run(commit_short)
+        _set_font(run, MONO_FONT, 10)
+
+    run = p.add_run(f"  |  Date: {str(date)[:10]}")
+    _set_font(run, BODY_FONT, 10)
+
+    if must_fix:
+        p = doc.add_paragraph()
+        run = p.add_run("Scope: HIGH+ severity")
+        _set_font(run, BODY_FONT, 10, bold=True, color=RH_RED)
+
     _add_body(doc, f"Generated by RHOAI Security Audit", color=RH_GREY)
+
+    # Sensitivity banner
+    doc.add_paragraph()
+    p = doc.add_paragraph()
+    run = p.add_run("CONFIDENTIAL")
+    _set_font(run, HEADING_FONT, 11, bold=True, color=SEV_COLORS["critical"])
+    run = p.add_run(" — This report may contain undisclosed security findings. Do not share outside authorized personnel. Do not post in public channels.")
+    _set_font(run, BODY_FONT, 10, color=RH_GREY)
 
     doc.add_page_break()
 
@@ -459,7 +581,7 @@ def generate_docx(scan_dir, output_path):
     sast_only = triage_counts.get("sast-only", 0)
     if sast_only:
         triage_parts.append(f"{sast_only} SAST-only")
-    demoted = sum(1 for f in findings if f.get("triage", {}).get("demoted_from"))
+    demoted = sum(1 for f in findings if isinstance(f.get("triage"), dict) and f["triage"].get("demoted_from"))
     if demoted:
         triage_parts.append(f"{demoted} demoted (non-production code)")
 
@@ -468,93 +590,49 @@ def generate_docx(scan_dir, output_path):
         for part in triage_parts:
             _add_body(doc, f"  {part}")
 
-    # --- Critical + High Findings ---
-    crit_high = [f for f in findings if f["severity"] in ("critical", "high")]
-    if crit_high:
-        _add_heading(doc, f"Critical and High Findings ({len(crit_high)})", level=1)
+    # --- Detailed Findings ---
+    sorted_findings = sorted(findings, key=lambda f: -SEV_RANK.get(f.get("severity", ""), 0))
+
+    if must_fix:
+        _add_heading(doc, f"Must-Fix Findings ({len(sorted_findings)})", level=1)
         _add_body(doc, "These findings require immediate attention.")
         doc.add_paragraph()
 
-        sorted_ch = sorted(crit_high, key=lambda f: -SEV_RANK.get(f.get("severity", ""), 0))
-        for i, f in enumerate(sorted_ch, 1):
-            sev = f.get("severity", "")
-            triage = f.get("triage", {}).get("status", "")
-            triage_label = {"corroborated": " [CORR]", "ai-only": " [AI]"}.get(triage, "")
-            title = f.get("title", f.get("id", ""))
-            file_display = _file_display(f.get("file", ""), f.get("line_start", 0))
-
-            _add_heading(doc, f"Finding {i}: {title} ({sev.upper()}{triage_label})", level=2)
-
-            # Metadata block with hyperlinked file path
-            rule_id = f.get("rule_id", "")
-            source = f.get("source", "")
-            category = f.get("category", "")
-            ref = branch_ref if f.get("origin") == "ai" else (commit_ref or branch_ref)
-            url = _github_url(f.get("file", ""), f.get("line_start", 0),
-                              f.get("line_end", 0), repo_full, ref)
-
-            p = doc.add_paragraph()
-            run = p.add_run("File: ")
-            run.font.name = BODY_FONT
-            run.font.size = Pt(10)
-            run.font.bold = True
-            if url:
-                _add_hyperlink(p, url, file_display)
-            else:
-                run = p.add_run(file_display)
-                run.font.name = MONO_FONT
-                run.font.size = Pt(9)
-
-            meta_parts = []
-            if source:
-                meta_parts.append(f"Source: {source}")
-            if rule_id and rule_id != title:
-                meta_parts.append(f"Rule: {rule_id}")
-            if category:
-                meta_parts.append(f"Category: {category}")
-            if meta_parts:
-                _add_body(doc, " | ".join(meta_parts), color=RH_GREY)
-
-            # Description: split at "Remediation:" if present
-            desc = f.get("description", "")
-            if not desc or desc == title:
-                desc = f"{title} detected in {file_display} by {source}."
-                if rule_id:
-                    desc += f" Rule: {rule_id}."
-            _add_rich_text(doc, desc)
-
-            snippet = f.get("snippet", "")
-            if snippet:
-                _add_code(doc, snippet[:500])
-
-            rec = f.get("recommendation", "")
-            if rec:
-                _add_recommendation(doc, rec[:600])
-
+        for i, f in enumerate(sorted_findings, 1):
+            _add_finding_detail(doc, f, i, repo_full, branch_ref, commit_ref)
+    else:
+        # Critical + High with full detail
+        crit_high = [f for f in sorted_findings if f["severity"] in ("critical", "high")]
+        if crit_high:
+            _add_heading(doc, f"Critical and High Findings ({len(crit_high)})", level=1)
+            _add_body(doc, "These findings require immediate attention.")
             doc.add_paragraph()
 
-    # --- AI Review Findings ---
-    ai_findings = [f for f in findings if f.get("origin") == "ai" and f["severity"] not in ("critical", "high")]
-    if ai_findings:
-        _add_heading(doc, f"AI Review Findings ({len(ai_findings)})", level=1)
-        _add_body(doc, "Findings from adversarial multi-agent review and semantic security analysis. These are code-level issues that require semantic understanding beyond pattern matching.")
-        doc.add_paragraph()
-        _add_findings_table(doc, ai_findings, repo_full, branch_ref, commit_ref)
+            for i, f in enumerate(crit_high, 1):
+                _add_finding_detail(doc, f, i, repo_full, branch_ref, commit_ref)
 
-    # --- Dependency Vulnerabilities ---
-    sca_findings = [f for f in findings if f.get("category") == "sca"]
-    if sca_findings:
-        _add_heading(doc, f"Dependency Vulnerabilities ({len(sca_findings)} CVEs)", level=1)
-        _add_findings_table(doc, sca_findings, repo_full, branch_ref, commit_ref)
+        # AI Review Findings (medium/low)
+        ai_findings = [f for f in findings if f.get("origin") == "ai" and f["severity"] not in ("critical", "high")]
+        if ai_findings:
+            _add_heading(doc, f"AI Review Findings ({len(ai_findings)})", level=1)
+            _add_body(doc, "Findings from adversarial multi-agent review and semantic security analysis.")
+            doc.add_paragraph()
+            _add_findings_table(doc, ai_findings, repo_full, branch_ref, commit_ref)
 
-    # --- All Other Findings ---
-    other = [f for f in findings
-             if f["severity"] not in ("critical", "high")
-             and f.get("origin") != "ai"
-             and f.get("category") != "sca"]
-    if other:
-        _add_heading(doc, f"Other Findings ({len(other)})", level=1)
-        _add_findings_table(doc, other, repo_full, branch_ref, commit_ref)
+        # Dependency Vulnerabilities
+        sca_findings = [f for f in findings if f.get("category") == "sca"]
+        if sca_findings:
+            _add_heading(doc, f"Dependency Vulnerabilities ({len(sca_findings)} CVEs)", level=1)
+            _add_findings_table(doc, sca_findings, repo_full, branch_ref, commit_ref)
+
+        # All Other Findings
+        other = [f for f in findings
+                 if f["severity"] not in ("critical", "high")
+                 and f.get("origin") != "ai"
+                 and f.get("category") != "sca"]
+        if other:
+            _add_heading(doc, f"Other Findings ({len(other)})", level=1)
+            _add_findings_table(doc, other, repo_full, branch_ref, commit_ref)
 
     # --- Tool Coverage ---
     _add_heading(doc, "Tool Coverage", level=1)
@@ -577,13 +655,15 @@ def main():
     parser = argparse.ArgumentParser(description="Generate Word document security report")
     parser.add_argument("scan_dir", help="Scan output directory")
     parser.add_argument("-o", "--output", help="Output file path")
+    parser.add_argument("--must-fix", action="store_true", help="Generate must-fix report (HIGH+ severity only)")
     args = parser.parse_args()
 
     output = args.output
     if not output:
-        output = str(Path(args.scan_dir) / "security-report.docx")
+        filename = "must-fix-report.docx" if args.must_fix else "security-report.docx"
+        output = str(Path(args.scan_dir) / filename)
 
-    path = generate_docx(args.scan_dir, output)
+    path = generate_docx(args.scan_dir, output, must_fix=args.must_fix)
     print(f"Report saved to: {path}")
 
 

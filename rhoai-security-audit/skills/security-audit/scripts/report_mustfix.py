@@ -160,6 +160,8 @@ def generate_mustfix(findings, metadata, min_severity="high", include_dismissed=
     sev_counts = Counter(f["severity"] for f in findings)
 
     # Header
+    lines.append("> **CONFIDENTIAL** — This report may contain undisclosed security findings. Do not share outside authorized personnel. Do not post in public channels.")
+    lines.append("")
     lines.append(f"# {repo_short}: Must-Fix Security Items ({min_severity.upper()}+)")
     lines.append("")
     lines.append(f"**Scope:** {min_severity.upper()} severity and above  ")
@@ -241,11 +243,11 @@ def generate_mustfix(findings, metadata, min_severity="high", include_dismissed=
 
 
 def load_ai_findings(scan_dir):
-    """Load AI review findings from raw/adversarial-reviewing/ and raw/semantic-scan/."""
+    """Load AI review findings from raw/adversarial-review{,ing}/ and raw/semantic-scan/."""
     import re as _re
     p = Path(scan_dir)
     ai_findings = []
-    for subdir in ["raw/adversarial-reviewing", "raw/semantic-scan"]:
+    for subdir in ["raw/adversarial-reviewing", "raw/adversarial-review", "raw/semantic-scan"]:
         d = p / subdir
         if not d.exists():
             continue
@@ -254,59 +256,223 @@ def load_ai_findings(scan_dir):
             if md_file.name.startswith("."):
                 continue
             text = md_file.read_text()
-            blocks = _re.split(r'\n(?=(?:Finding ID:|###?\s+(?:SEC|PERF|QUAL|CORR|ARCH|FINDING)-\d+))', text)
-            for block in blocks:
-                id_match = _re.search(r'(?:Finding ID:\s*|###?\s+)((?:SEC|PERF|QUAL|CORR|ARCH|FINDING)-\d+)', block)
-                if not id_match:
-                    continue
-                f = {"id": id_match.group(1), "source": source, "category": "ai-review", "detected_by": [source]}
-                sev_match = _re.search(r'Severity:\s*(\w+)', block, _re.IGNORECASE)
-                if sev_match:
-                    sev = sev_match.group(1).lower()
-                    f["severity"] = {"critical": "critical", "important": "high", "high": "high",
-                                     "medium": "medium", "minor": "low"}.get(sev, "medium")
-                else:
-                    f["severity"] = "medium"
-                title_match = _re.search(r'Title:\s*(.+?)(?:\n|$)', block)
-                f["title"] = title_match.group(1).strip() if title_match else f["id"]
-                f["rule_id"] = f["id"]
-                file_match = _re.search(r'File:\s*`?([^\n`]+)`?', block)
-                f["file"] = file_match.group(1).strip() if file_match else ""
-                line_match = _re.search(r'Lines?:\s*(\d+)', block)
-                f["line_start"] = int(line_match.group(1)) if line_match else 0
-                evidence_match = _re.search(r'Evidence:\s*(.+?)(?=\n(?:Impact|Recommended|Finding ID:|\Z))', block, _re.DOTALL)
-                f["description"] = evidence_match.group(1).strip()[:500] if evidence_match else ""
-                fix_match = _re.search(r'Recommended fix:\s*(.+?)(?=\n(?:Finding ID:|\Z))', block, _re.DOTALL)
-                f["recommendation"] = fix_match.group(1).strip()[:300] if fix_match else ""
-                ai_findings.append(f)
+            parsed = _parse_ai_md_mustfix(text, source)
+            ai_findings.extend(parsed)
     return ai_findings
 
 
+def _parse_ai_md_mustfix(text, source):
+    import re
+    findings = []
+
+    # Format 1: "Finding ID: SEC-001" or "### SEC-001"
+    blocks = re.split(r'\n(?=(?:Finding ID:|###?\s+(?:SEC|PERF|QUAL|CORR|ARCH|FINDING)-\d+))', text)
+    for block in blocks:
+        id_match = re.search(r'(?:Finding ID:\s*|###?\s+)((?:SEC|PERF|QUAL|CORR|ARCH|FINDING)-\d+)', block)
+        if not id_match:
+            continue
+        f = {"id": id_match.group(1), "source": source, "category": "ai-review", "detected_by": [source]}
+        sev_match = re.search(r'Severity:\s*(\w+)', block, re.IGNORECASE)
+        sev = sev_match.group(1).lower() if sev_match else "medium"
+        f["severity"] = {"critical": "critical", "important": "high", "high": "high",
+                         "medium": "medium", "minor": "low"}.get(sev, "medium")
+        title_match = re.search(r'Title:\s*(.+?)(?:\n|$)', block)
+        f["title"] = title_match.group(1).strip() if title_match else f["id"]
+        f["rule_id"] = f["id"]
+        file_match = re.search(r'File:\s*`?([^\n`]+)`?', block)
+        f["file"] = file_match.group(1).strip() if file_match else ""
+        line_match = re.search(r'Lines?:\s*(\d+)', block)
+        f["line_start"] = int(line_match.group(1)) if line_match else 0
+        evidence_match = re.search(r'Evidence:\s*(.+?)(?=\n(?:Impact|Recommended|Finding ID:|\Z))', block, re.DOTALL)
+        f["description"] = evidence_match.group(1).strip()[:500] if evidence_match else ""
+        fix_match = re.search(r'Recommended fix:\s*(.+?)(?=\n(?:Finding ID:|\Z))', block, re.DOTALL)
+        f["recommendation"] = fix_match.group(1).strip()[:300] if fix_match else ""
+        findings.append(f)
+
+    # Format 2: "## [CRITICAL] Title" or "### [HIGH] Title"
+    if not findings:
+        blocks = re.split(r'\n(?=##[#]?\s+\[(?:CRITICAL|HIGH|MEDIUM|LOW|INFO)\])', text)
+        for i, block in enumerate(blocks):
+            heading = re.match(r'##[#]?\s+\[(CRITICAL|HIGH|MEDIUM|LOW|INFO)\]\s+(.+?)(?:\n|$)', block)
+            if not heading:
+                continue
+            prefix = "SEC" if source == "adversarial-review" else "SCAN"
+            fid = f"{prefix}-{i+1:03d}"
+            f = {"id": fid, "source": source, "category": "ai-review", "detected_by": [source],
+                 "title": heading.group(2).strip(), "severity": heading.group(1).lower(),
+                 "rule_id": fid}
+            loc_match = re.search(r'(?:- )?\*\*Location\*\*:\s*`?([^`\n]+)`?', block)
+            if loc_match:
+                f["file"] = loc_match.group(1).strip().split(",")[0].split("(")[0].strip()
+            else:
+                f["file"] = ""
+            line_match = re.search(r':(\d+)', f.get("file", ""))
+            if line_match:
+                f["line_start"] = int(line_match.group(1))
+                f["file"] = f["file"].split(":")[0]
+            else:
+                f["line_start"] = 0
+            desc_match = re.search(
+                r'\*\*Description\*\*:?\s*\n?(.*?)(?=\n\*\*(?:Impact|Evidence|Recommendation|Data Flow)|---|\Z)',
+                block, re.DOTALL | re.IGNORECASE)
+            f["description"] = desc_match.group(1).strip()[:500] if desc_match else ""
+            rec_match = re.search(
+                r'\*\*Recommendation\*\*:?\s*\n?(.*?)(?=\n---|\n##|\Z)',
+                block, re.DOTALL | re.IGNORECASE)
+            f["recommendation"] = rec_match.group(1).strip()[:300] if rec_match else ""
+            findings.append(f)
+
+    # Format 3: "### N. Title" with **Severity**: HIGH
+    if not findings:
+        blocks = re.split(r'\n(?=### \d+\.)', text)
+        for i, block in enumerate(blocks):
+            heading = re.match(r'### \d+\.\s+(.+?)(?:\n|$)', block)
+            if not heading:
+                continue
+            f = {"id": f"SCAN-{i+1:03d}", "source": source, "category": "ai-review",
+                 "detected_by": [source], "title": heading.group(1).strip(), "rule_id": f"SCAN-{i+1:03d}"}
+            sev_match = re.search(r'\*\*Severity\*\*:\s*(\w+)', block, re.IGNORECASE)
+            sev = sev_match.group(1).lower() if sev_match else "medium"
+            f["severity"] = {"critical": "critical", "high": "high",
+                             "medium": "medium", "low": "low"}.get(sev, "medium")
+            file_match = re.search(r'\*\*(?:File|Location)\*\*:\s*`?([^`\n]+)`?', block)
+            if file_match:
+                f["file"] = file_match.group(1).strip().split(",")[0].split("(")[0].strip()
+            else:
+                f["file"] = ""
+            line_match = re.search(r':(\d+)', f.get("file", ""))
+            if line_match:
+                f["line_start"] = int(line_match.group(1))
+                f["file"] = f["file"].split(":")[0]
+            else:
+                f["line_start"] = 0
+            desc_match = re.search(r'(?:Description|Impact|Details).*?:\s*(.+?)(?=\n\*\*|\n###|\Z)',
+                                   block, re.DOTALL | re.IGNORECASE)
+            f["description"] = desc_match.group(1).strip()[:500] if desc_match else ""
+            rec_match = re.search(r'(?:Remediation|Fix|Recommendation).*?:\s*(.+?)(?=\n###|\Z)',
+                                  block, re.DOTALL | re.IGNORECASE)
+            f["recommendation"] = rec_match.group(1).strip()[:300] if rec_match else ""
+            findings.append(f)
+
+    return findings
+
+
+SEV_COLORS = {
+    "critical": "#dc3545", "high": "#fd7e14", "medium": "#ffc107",
+    "low": "#17a2b8", "info": "#6c757d",
+}
+SOURCE_COLORS = {
+    "adversarial-review": "#2563eb", "semantic-scan": "#7c3aed",
+}
+TRIAGE_BADGES = {
+    "corroborated": '<span class="chip" style="background:#16a34a;margin-left:4px" title="Found by both SAST and AI">CORR</span>',
+    "ai-only": '<span class="chip" style="background:#2563eb;margin-left:4px" title="AI-only finding">AI</span>',
+    "sast-only": "",
+}
+
 MUSTFIX_HTML_STYLE = """
-* { margin: 0; padding: 0; box-sizing: border-box; }
-body { font: 14px/1.6 -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: #0d1117; color: #c9d1d9; max-width: 1000px; margin: 0 auto; padding: 32px 40px; }
-h1 { font-size: 24px; margin-bottom: 8px; color: #f0f6fc; }
-h2 { font-size: 18px; margin: 28px 0 12px; color: #f0f6fc; padding-bottom: 8px; border-bottom: 1px solid #30363d; }
-.meta { color: #8b949e; font-size: 13px; margin-bottom: 24px; }
-.fix-card { background: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 16px 20px; margin: 12px 0; }
-.fix-header { display: flex; align-items: center; gap: 12px; margin-bottom: 8px; }
-.fix-title { font-size: 15px; font-weight: 600; color: #f0f6fc; }
-.badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; color: #fff; }
-.badge-critical { background: #dc3545; }
-.badge-high { background: #fd7e14; }
-.badge-medium { background: #ffc107; color: #000; }
-.badge-source { background: #30363d; color: #8b949e; font-weight: 400; }
-.fix-body { font-size: 13px; color: #c9d1d9; }
-.fix-body p { margin: 6px 0; }
-.fix-body code { background: #21262d; padding: 2px 6px; border-radius: 3px; font-size: 12px; }
-.fix-body ul { padding-left: 20px; margin: 4px 0; }
-.fix-body .label { color: #8b949e; font-weight: 600; text-transform: uppercase; font-size: 11px; }
-table { width: 100%; border-collapse: collapse; margin: 12px 0; font-size: 13px; }
-th { background: #161b22; padding: 8px 10px; text-align: left; border-bottom: 2px solid #30363d; color: #8b949e; font-weight: 600; text-transform: uppercase; font-size: 11px; }
-td { padding: 6px 10px; border-bottom: 1px solid #21262d; }
-tr:hover { background: #161b22; }
-.footer { margin-top: 40px; padding-top: 16px; border-top: 1px solid #30363d; color: #8b949e; font-size: 12px; }
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font:14px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif; background:#0d1117; color:#c9d1d9; padding:24px 40px; max-width:1100px; margin:0 auto; }
+a { color:#58a6ff; text-decoration:none; }
+a:hover { text-decoration:underline; }
+h1 { font-size:20px; color:#f0f6fc; margin-bottom:2px; }
+h2 { font-size:16px; margin:24px 0 12px; color:#f0f6fc; padding-bottom:8px; border-bottom:1px solid #30363d; }
+.header-meta { color:#4a5568; font-size:12px; margin-bottom:16px; }
+.stat-row { display:flex; gap:10px; margin:12px 0; flex-wrap:wrap; }
+.stat-card { background:#161b22; border:1px solid #30363d; border-radius:6px; padding:10px 16px; text-align:center; }
+.stat-count { font-size:24px; font-weight:700; }
+.stat-label { font-size:10px; text-transform:uppercase; color:#8b949e; }
+.finding-card { background:#161b22; border:1px solid #30363d; border-left:3px solid #6c757d; border-radius:6px; padding:12px 14px; margin-bottom:8px; transition:border-color .15s; }
+.finding-card:hover { border-color:#58a6ff; }
+.card-header { display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-bottom:4px; }
+.card-title { color:#f0f6fc; font-size:13px; font-weight:500; }
+.card-file { margin-left:auto; font-size:11px; }
+.file-link { color:#58a6ff; font-size:11px; }
+.card-desc { font-size:12px; color:#c9d1d9; margin-top:4px; }
+.chip { display:inline-block; padding:1px 7px; border-radius:10px; font-size:10px; font-weight:600; color:#fff; white-space:nowrap; }
+.snippet { background:#0d1117; border:1px solid #21262d; padding:6px 8px; border-radius:4px; font-size:11px; margin-top:6px; overflow-x:auto; color:#e6edf3; }
+.card-expand { padding:8px 0 4px; border-top:1px solid #21262d; margin-top:8px; font-size:12px; }
+.fix-label { color:#8b949e; font-weight:600; font-size:11px; text-transform:uppercase; }
+.card-toggle { color:#58a6ff; font-size:11px; cursor:pointer; margin-top:4px; }
+.card-toggle:hover { text-decoration:underline; }
+table { width:100%; border-collapse:collapse; font-size:12px; }
+th { background:#0d1117; padding:6px 8px; text-align:left; border-bottom:1px solid #30363d; color:#8b949e; font-weight:600; text-transform:uppercase; font-size:10px; }
+td { padding:5px 8px; border-bottom:1px solid #161b22; }
+tr:hover { background:#0d1117; }
+.footer { margin-top:32px; padding-top:12px; border-top:1px solid #21262d; color:#4a5568; font-size:11px; }
 """
+
+
+def _mustfix_file_display(filepath, line_start):
+    parts = filepath.replace("\\", "/").split("/")
+    for i, p in enumerate(parts):
+        if p in ("repo", "repos"):
+            filepath = "/".join(parts[i + 2:]) if i + 2 <= len(parts) else filepath
+            break
+    return f"{filepath}:{line_start}" if line_start else filepath
+
+
+def _render_mustfix_card(f, repo_full, ref, card_idx):
+    from html import escape as esc
+    sev = f.get("severity", "info")
+    color = SEV_COLORS.get(sev, "#6c757d")
+    fpath = f.get("file", "")
+    line = f.get("line_start", 0)
+    line_end = f.get("line_end", 0)
+    url = _github_url(fpath, line, repo_full, ref)
+    display = _mustfix_file_display(fpath, line)
+    source = f.get("source", "")
+    triage_status = f.get("triage", {}).get("status", "") if isinstance(f.get("triage"), dict) else f.get("triage", "")
+    title_text = esc(f.get("title", "")[:100])
+    raw_desc = f.get("description", "")
+    snippet = f.get("snippet", "")
+    rec = f.get("recommendation", "")
+
+    if not rec and "Remediation:" in raw_desc:
+        parts = raw_desc.split("Remediation:", 1)
+        raw_desc = parts[0].strip()
+        rec = parts[1].strip()
+
+    desc = esc(raw_desc[:300])
+    rec = esc(rec[:300])
+
+    triage_badge = TRIAGE_BADGES.get(triage_status, "")
+    sev_badge = f'<span class="chip" style="background:{color};color:#fff">{sev.upper()}</span>{triage_badge}'
+
+    src_badge = ""
+    if source:
+        src_color = SOURCE_COLORS.get(source, "#30363d")
+        src_text_color = "#fff" if src_color != "#30363d" else "#8b949e"
+        src_badge = f'<span class="chip" style="background:{src_color};color:{src_text_color}">{esc(source)}</span>'
+
+    file_link = f'<a href="{url}" class="file-link" target="_blank">{esc(display)} ↗</a>' if url else f'<code>{esc(display)}</code>'
+
+    snippet_html = ""
+    if snippet:
+        lines = snippet.strip().split("\n")
+        if len(lines) > 6:
+            lines = lines[:6] + ["..."]
+        snippet_html = f'<pre class="snippet"><code>{esc(chr(10).join(lines))}</code></pre>'
+
+    expand_id = f"mustfix-expand-{card_idx}"
+    rec_html = ""
+    if rec:
+        rec_html = f'''<div class="card-expand" id="{expand_id}" style="display:none">
+            <div class="card-fix"><span class="fix-label">Fix:</span> {rec}</div>
+        </div>
+        <div class="card-toggle" onclick="var e=document.getElementById('{expand_id}');e.style.display=e.style.display==='none'?'block':'none';this.textContent=e.style.display==='none'?'Show fix ▾':'Hide fix ▴'">Show fix ▾</div>'''
+
+    return f'''<div class="finding-card" style="border-left-color:{color}">
+    <div class="card-header">
+        {sev_badge}
+        <span class="card-title">{title_text}</span>
+        {src_badge}
+        <span class="card-file">{file_link}</span>
+    </div>
+    <div class="card-desc">{desc}</div>
+    {snippet_html}
+    {rec_html}
+</div>'''
 
 
 def generate_mustfix_html(findings, ai_findings, metadata, min_severity="high"):
@@ -315,80 +481,73 @@ def generate_mustfix_html(findings, ai_findings, metadata, min_severity="high"):
     repo_short = repo_full.split("/")[-1] if "/" in repo_full else repo_full
 
     all_combined = findings + ai_findings
-    fixes = _group_findings(all_combined, repo_short, min_severity)
+    min_rank = SEV_RANK.get(min_severity, 3)
+    must_fix = [f for f in all_combined if SEV_RANK.get(f.get("severity", ""), 0) >= min_rank]
+    must_fix.sort(key=lambda f: (-SEV_RANK.get(f.get("severity", ""), 0), f.get("file", "")))
 
-    if not fixes:
+    if not must_fix:
         return f"<html><body style='background:#0d1117;color:#c9d1d9;padding:40px'><h1>No must-fix items at {min_severity.upper()}+ severity</h1></body></html>"
-
-    sev_badge = lambda s: f'<span class="badge badge-{s}">{s.upper()}</span>'
 
     branch = metadata.get("branch", "main")
     commit = metadata.get("commit", "")
     ref = commit or branch
+    date = metadata.get("date", "")
 
-    cards = []
-    for i, fix in enumerate(fixes, 1):
-        file_items = []
-        for fp in fix["files"][:10]:
-            url = _github_url(fp.split(":")[0], fp.split(":")[-1] if ":" in fp else "", repo_full, ref)
-            if url:
-                file_items.append(f'<li><a href="{url}" style="color:#58a6ff"><code>{escape(fp)}</code></a></li>')
-            else:
-                file_items.append(f"<li><code>{escape(fp)}</code></li>")
-        files_html = "".join(file_items)
-        if len(fix["files"]) > 10:
-            files_html += f"<li>+{len(fix['files'])-10} more</li>"
-        source_badges = " ".join(f'<span class="badge badge-source">{escape(s)}</span>' for s in fix["detected_by"])
-        rec = escape(fix.get("recommendation", "")) if fix.get("recommendation") else ""
-        rec_html = f'<p><span class="label">Fix:</span> {rec}</p>' if rec else ""
+    from collections import Counter as Ctr
+    sev_counts = Ctr(f["severity"] for f in must_fix)
+    triage_counts = Ctr(
+        f.get("triage", {}).get("status", "sast-only") if isinstance(f.get("triage"), dict) else "sast-only"
+        for f in must_fix)
 
-        cards.append(f"""
-        <div class="fix-card" style="border-left: 4px solid {'#dc3545' if fix['severity']=='critical' else '#fd7e14' if fix['severity']=='high' else '#ffc107'}">
-            <div class="fix-header">
-                <span style="color:#8b949e;font-weight:600">Fix {i}</span>
-                {sev_badge(fix['severity'])}
-                {source_badges}
-            </div>
-            <div class="fix-title">{escape(fix['title'])}</div>
-            <div class="fix-body">
-                <p>{escape(fix['description'][:300])}</p>
-                <p><span class="label">Files ({fix['file_count']}):</span></p>
-                <ul>{files_html}</ul>
-                {rec_html}
-                <p><span class="label">Effort:</span> {escape(fix['effort'])}</p>
-            </div>
-        </div>""")
+    stat_cards = ""
+    for sev in ["critical", "high", "medium"]:
+        c = sev_counts.get(sev, 0)
+        if c:
+            stat_cards += f'<div class="stat-card" style="border-left:3px solid {SEV_COLORS[sev]}"><div class="stat-count" style="color:{SEV_COLORS[sev]}">{c}</div><div class="stat-label">{sev.title()}</div></div>'
+
+    cards_html = "\n".join(_render_mustfix_card(f, repo_full, ref, i) for i, f in enumerate(must_fix))
 
     summary_rows = []
-    for i, fix in enumerate(fixes, 1):
-        summary_rows.append(f"<tr><td>{i}</td><td>{escape(fix['title'][:50])}</td>"
-                            f"<td>{sev_badge(fix['severity'])}</td>"
-                            f"<td>{fix['file_count']}</td>"
-                            f"<td>{escape(fix['effort'].split('(')[0].strip())}</td></tr>")
+    for i, f in enumerate(must_fix, 1):
+        sev = f["severity"]
+        sev_chip = f'<span class="chip" style="background:{SEV_COLORS.get(sev,"#6c757d")};color:#fff;font-size:10px">{sev.upper()}</span>'
+        src = f.get("source", "")
+        title = escape(f.get("title", "")[:50])
+        summary_rows.append(f"<tr><td>{i}</td><td>{title}</td><td>{sev_chip}</td><td>{escape(src)}</td></tr>")
 
-    sast_count = len([f for f in fixes if any(s not in ("adversarial-review", "semantic-scan") for s in f["detected_by"])])
-    ai_count = len([f for f in fixes if any(s in ("adversarial-review", "semantic-scan") for s in f["detected_by"])])
+    corr = triage_counts.get("corroborated", 0)
+    ai_only = triage_counts.get("ai-only", 0)
+    sast_only = triage_counts.get("sast-only", 0)
 
     return f"""<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Must-Fix: {escape(repo_short)}</title>
 <style>{MUSTFIX_HTML_STYLE}</style></head><body>
+<div style="background:#dc354520;border:1px solid #dc3545;border-radius:6px;padding:10px 14px;margin-bottom:16px;font-size:12px;color:#f0f6fc">
+    <strong style="color:#dc3545">CONFIDENTIAL</strong> — This report may contain undisclosed security findings. Do not share outside authorized personnel. Do not post in public channels.
+</div>
 <h1>Must-Fix: {escape(repo_short)}</h1>
-<div class="meta">
-    {escape(repo_full)} | Branch: {escape(metadata.get('branch','main'))} |
-    {escape(str(metadata.get('date','')))} |
-    {len(fixes)} items ({sast_count} SAST, {ai_count} AI review)
+<div class="header-meta">{escape(repo_full)} | {escape(branch)} | {escape(str(commit)[:8])} | {escape(str(date)[:10])} | {min_severity.upper()}+ severity</div>
+
+<div class="stat-row">{stat_cards}</div>
+
+<div style="display:flex;gap:16px;flex-wrap:wrap;font-size:11px;color:#8b949e;margin:8px 0 4px;padding:6px 0;border-bottom:1px solid #21262d">
+    <span><span class="chip" style="background:#16a34a">CORR</span> Corroborated: found by both SAST tools and AI review</span>
+    <span><span class="chip" style="background:#2563eb">AI</span> AI-only: logic/semantic issue found by AI review only</span>
+    <span style="color:#4a5568">No badge = SAST tool finding only</span>
 </div>
 
-{''.join(cards)}
+<p style="color:#8b949e;font-size:12px;margin-bottom:12px">{len(must_fix)} must-fix findings: {corr} corroborated, {ai_only} AI-only, {sast_only} SAST-only</p>
+
+{cards_html}
 
 <h2>Summary</h2>
 <table>
-<thead><tr><th>#</th><th>Finding</th><th>Severity</th><th>Files</th><th>Effort</th></tr></thead>
+<thead><tr><th>#</th><th>Finding</th><th>Severity</th><th>Source</th></tr></thead>
 <tbody>{''.join(summary_rows)}</tbody>
 </table>
 
-<p style="color:#8b949e;margin-top:16px"><strong>Total:</strong> {len(fixes)} must-fix items, {sum(f['file_count'] for f in fixes)} file locations</p>
+<p style="color:#8b949e;margin-top:16px"><strong>Total:</strong> {len(must_fix)} must-fix items</p>
 <div class="footer">Generated by RHOAI Security Audit</div>
 </body></html>"""
 
