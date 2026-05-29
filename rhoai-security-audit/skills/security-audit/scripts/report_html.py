@@ -88,8 +88,8 @@ def load_metadata(scan_dir):
                 break
     if not meta.get("date"):
         for part in Path(scan_dir).resolve().parts:
-            if len(part) == 10 and part[4] == "-" and part[7] == "-":
-                meta["date"] = part
+            if len(part) >= 10 and part[4] == "-" and part[7] == "-":
+                meta["date"] = part[:10]
                 break
     return meta
 

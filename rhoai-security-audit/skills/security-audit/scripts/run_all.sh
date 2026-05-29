@@ -32,10 +32,13 @@ TOOL_COUNTS_LOG=""
 run_tool() {
   local name="$1" cmd="$2" output="$3" empty_default="${4:-}"
   echo "--- ${name} ---"
-  TIMEOUT_CMD="timeout"
-  command -v timeout &>/dev/null || TIMEOUT_CMD="gtimeout"
-  command -v $TIMEOUT_CMD &>/dev/null || TIMEOUT_CMD=""
-  if eval "${TIMEOUT_CMD:+$TIMEOUT_CMD 600} ${cmd}" 2>/dev/null; then
+  local timeout_prefix=""
+  if command -v timeout &>/dev/null; then
+    timeout_prefix="timeout 600"
+  elif command -v gtimeout &>/dev/null; then
+    timeout_prefix="gtimeout 600"
+  fi
+  if ${timeout_prefix} bash -c "${cmd}" 2>/dev/null; then
     TOOLS_RAN+=("${name}")
   else
     TOOLS_RAN+=("${name}")
@@ -87,7 +90,7 @@ run_tool "trufflehog" \
 SHELL_FILES=$(find "${WORKDIR}" -name '*.sh' -type f -not -path '*/vendor/*' -not -path '*/.git/*' 2>/dev/null || true)
 if [ -n "${SHELL_FILES}" ]; then
   run_tool "shellcheck" \
-    "echo '${SHELL_FILES}' | tr ' ' '\n' | xargs shellcheck -f json > '${RESULTS_DIR}/shellcheck-report.json'" \
+    "find '${WORKDIR}' -name '*.sh' -type f -not -path '*/vendor/*' -not -path '*/.git/*' -print0 | xargs -0 shellcheck -f json > '${RESULTS_DIR}/shellcheck-report.json'" \
     "${RESULTS_DIR}/shellcheck-report.json" \
     '[]'
 else
@@ -100,7 +103,7 @@ fi
 DOCKERFILES=$(find "${WORKDIR}" \( -name 'Dockerfile*' -o -name 'Containerfile*' \) -type f -not -path '*/.git/*' 2>/dev/null || true)
 if [ -n "${DOCKERFILES}" ]; then
   run_tool "hadolint" \
-    "echo '${DOCKERFILES}' | tr ' ' '\n' | xargs hadolint -f sarif > '${RESULTS_DIR}/hadolint.sarif'" \
+    "find '${WORKDIR}' \\( -name 'Dockerfile*' -o -name 'Containerfile*' \\) -type f -not -path '*/.git/*' -print0 | xargs -0 hadolint -f sarif > '${RESULTS_DIR}/hadolint.sarif'" \
     "${RESULTS_DIR}/hadolint.sarif" \
     '{"runs":[]}'
 else

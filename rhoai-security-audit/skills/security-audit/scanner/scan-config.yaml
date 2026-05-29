@@ -38,6 +38,10 @@ repos:
 - opendatahub-io/mlflow-go
 - opendatahub-io/kube-auth-proxy
 - opendatahub-io/kube-rbac-proxy
+# Images use upstream tags (main, latest, fast, etc.) because we scan what teams
+# actually deploy. For reproducible results, scan-repo.sh records the resolved
+# digest at scan time in commit-info.json. Pin to specific digests only when
+# scanning a release candidate.
 images:
 - quay.io/opendatahub/odh-dashboard:main
 - quay.io/opendatahub/odh-mod-arch-gen-ai:main

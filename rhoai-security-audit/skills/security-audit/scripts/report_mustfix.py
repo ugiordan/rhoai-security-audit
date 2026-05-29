@@ -407,7 +407,7 @@ def _mustfix_file_display(filepath, line_start):
     parts = filepath.replace("\\", "/").split("/")
     for i, p in enumerate(parts):
         if p in ("repo", "repos"):
-            filepath = "/".join(parts[i + 2:]) if i + 2 <= len(parts) else filepath
+            filepath = "/".join(parts[i + 2:]) if i + 2 < len(parts) else filepath
             break
     return f"{filepath}:{line_start}" if line_start else filepath
 
@@ -433,8 +433,8 @@ def _render_mustfix_card(f, repo_full, ref, card_idx):
         raw_desc = parts[0].strip()
         rec = parts[1].strip()
 
-    desc = esc(raw_desc[:300])
-    rec = esc(rec[:300])
+    desc = esc(raw_desc[:800])
+    rec = esc(rec[:800])
 
     triage_badge = TRIAGE_BADGES.get(triage_status, "")
     sev_badge = f'<span class="chip" style="background:{color};color:#fff">{sev.upper()}</span>{triage_badge}'
@@ -445,7 +445,7 @@ def _render_mustfix_card(f, repo_full, ref, card_idx):
         src_text_color = "#fff" if src_color != "#30363d" else "#8b949e"
         src_badge = f'<span class="chip" style="background:{src_color};color:{src_text_color}">{esc(source)}</span>'
 
-    file_link = f'<a href="{url}" class="file-link" target="_blank">{esc(display)} ↗</a>' if url else f'<code>{esc(display)}</code>'
+    file_link = f'<a href="{esc(url) if url else ""}" class="file-link" target="_blank">{esc(display)} ↗</a>' if url else f'<code>{esc(display)}</code>'
 
     snippet_html = ""
     if snippet:
@@ -565,7 +565,9 @@ def main():
     args = parser.parse_args()
 
     findings = load_findings(args.scan_dir)
-    ai_findings = load_ai_findings(args.scan_dir)
+    # Only load AI findings from raw markdown if triaged data lacks them
+    has_ai = any(f.get("origin") == "ai" for f in findings)
+    ai_findings = load_ai_findings(args.scan_dir) if not has_ai else []
     metadata = load_metadata(args.scan_dir)
 
     if args.html:

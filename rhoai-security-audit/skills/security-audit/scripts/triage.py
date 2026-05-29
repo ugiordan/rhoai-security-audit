@@ -245,6 +245,13 @@ def cross_correlate(sast_findings, ai_findings):
         if key:
             sast_by_file[key].append(f)
 
+    # Pre-compute keywords for all SAST findings
+    sast_kw_cache = {}
+    for f in sast_findings:
+        fid = id(f)
+        sast_kw_cache[fid] = _title_keywords(
+            f.get("title", "") + " " + f.get("description", ""))
+
     corroborated_sast_ids = set()
 
     for ai_f in ai_findings:
@@ -257,8 +264,7 @@ def cross_correlate(sast_findings, ai_findings):
             if not ai_file or ai_file not in sast_file and sast_file not in ai_file:
                 continue
             for sast_f in sast_list:
-                sast_keywords = _title_keywords(
-                    sast_f.get("title", "") + " " + sast_f.get("description", ""))
+                sast_keywords = sast_kw_cache[id(sast_f)]
                 overlap = len(ai_keywords & sast_keywords)
                 if overlap >= 2 and overlap > best_score:
                     best_match = sast_f
@@ -268,7 +274,6 @@ def cross_correlate(sast_findings, ai_findings):
             ai_f["triage"]["status"] = "corroborated"
             ai_f["triage"]["corroborated_by"] = best_match.get("id", "")
             ai_f["triage"]["match_score"] = best_score
-            ai_f["confidence"] = min(ai_f.get("confidence", 0.7) + 0.15, 1.0)
             corroborated_sast_ids.add(best_match.get("id", ""))
             best_match.setdefault("triage", {})
             best_match["triage"]["corroborated_by_ai"] = ai_f["id"]

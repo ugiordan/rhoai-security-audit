@@ -13,7 +13,7 @@ RUN go install golang.org/x/vuln/cmd/govulncheck@v1.1.4 \
     && go install github.com/securego/gosec/v2/cmd/gosec@v2.22.4
 
 # Stage 2: Final image (UBI10 has glibc 2.39, required by semgrep-core)
-FROM registry.access.redhat.com/ubi10:latest
+FROM registry.access.redhat.com/ubi10:10.0
 ARG TARGETARCH
 
 USER 0
@@ -47,7 +47,7 @@ RUN case "${TARGETARCH:-amd64}" in \
 
 # Python tools + semgrep
 ENV PIP_DEFAULT_TIMEOUT=300
-RUN pip install --no-cache-dir --break-system-packages semgrep yamllint pip-audit zizmor && \
+RUN pip install --no-cache-dir --break-system-packages semgrep==1.164.0 yamllint==1.38.0 pip-audit==2.10.0 zizmor==1.25.2 && \
     SEMGREP_BIN=$(python3 -c "import semgrep.bin, os; print(os.path.dirname(semgrep.bin.__file__))") && \
     if [ -f "${SEMGREP_BIN}/semgrep-core.exe" ] && [ ! -f "${SEMGREP_BIN}/semgrep-core" ]; then \
       mv "${SEMGREP_BIN}/semgrep-core.exe" "${SEMGREP_BIN}/semgrep-core" && \
@@ -90,16 +90,24 @@ RUN case "${TARGETARCH:-amd64}" in \
       "https://github.com/aquasecurity/trivy/releases/download/v0.70.0/trivy_0.70.0_Linux-${TV_ARCH}.tar.gz" \
     && tar -xzf /tmp/tv.tar.gz -C /usr/local/bin/ trivy && rm /tmp/tv.tar.gz
 
-# grype
-RUN curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b /usr/local/bin
+# grype (pinned, no curl|sh)
+RUN GRYPE_VERSION="0.112.0" && \
+    case "${TARGETARCH:-amd64}" in \
+      amd64) GRYPE_ARCH="amd64" ;; \
+      arm64) GRYPE_ARCH="arm64" ;; \
+    esac && \
+    curl -sSfL -o /tmp/grype.tar.gz \
+      "https://github.com/anchore/grype/releases/download/v${GRYPE_VERSION}/grype_${GRYPE_VERSION}_linux_${GRYPE_ARCH}.tar.gz" \
+    && tar -xzf /tmp/grype.tar.gz -C /usr/local/bin/ grype && rm /tmp/grype.tar.gz
 
-# osv-scanner
-RUN case "${TARGETARCH:-amd64}" in \
+# osv-scanner (pinned version)
+RUN OSV_VERSION="2.3.8" && \
+    case "${TARGETARCH:-amd64}" in \
       amd64) OSV_ARCH="amd64" ;; \
       arm64) OSV_ARCH="arm64" ;; \
     esac && \
     curl -sSfL -o /usr/local/bin/osv-scanner \
-      "https://github.com/google/osv-scanner/releases/latest/download/osv-scanner_linux_${OSV_ARCH}" \
+      "https://github.com/google/osv-scanner/releases/download/v${OSV_VERSION}/osv-scanner_linux_${OSV_ARCH}" \
     && chmod +x /usr/local/bin/osv-scanner
 
 # actionlint

@@ -25,7 +25,7 @@ SCAN_SCRIPT="${SKILL_DIR}/scanner/scripts/scan-repo.sh"
 
 if [ -f "${SCAN_SCRIPT}" ]; then
   MOUNT_DIR="$(mktemp -d)"
-  bash "${SCAN_SCRIPT}" "${REPO}" "${MOUNT_DIR}"
+  SCAN_BRANCH="${BRANCH}" bash "${SCAN_SCRIPT}" "${REPO}" "${MOUNT_DIR}"
   if [ -d "${MOUNT_DIR}/${REPO_SHORT}" ]; then
     cp -R "${MOUNT_DIR}/${REPO_SHORT}/"* "${RESULTS_DIR}/" 2>/dev/null || true
   fi

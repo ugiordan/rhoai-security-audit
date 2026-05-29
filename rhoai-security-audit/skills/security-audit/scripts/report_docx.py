@@ -87,8 +87,8 @@ def load_metadata(scan_dir):
     if not meta.get("date"):
         parts = Path(scan_dir).resolve().parts
         for part in parts:
-            if len(part) == 10 and part[4] == "-" and part[7] == "-":
-                meta["date"] = part
+            if len(part) >= 10 and part[4] == "-" and part[7] == "-":
+                meta["date"] = part[:10]
                 break
     return meta
 
@@ -97,7 +97,7 @@ def _file_display(filepath, line_start):
     parts = filepath.replace("\\", "/").split("/")
     for i, p in enumerate(parts):
         if p in ("repo", "repos"):
-            filepath = "/".join(parts[i + 2:]) if i + 2 <= len(parts) else filepath
+            filepath = "/".join(parts[i + 2:]) if i + 2 < len(parts) else filepath
             break
     return f"{filepath}:{line_start}" if line_start else filepath
 
@@ -109,7 +109,7 @@ def _github_url(filepath, line_start, line_end, repo_full, ref):
     parts = filepath.replace("\\", "/").split("/")
     for i, p in enumerate(parts):
         if p in ("repo", "repos"):
-            url_path = "/".join(parts[i + 2:]) if i + 2 <= len(parts) else filepath
+            url_path = "/".join(parts[i + 2:]) if i + 2 < len(parts) else filepath
             break
     frag = f"#L{line_start}" if line_start else ""
     if line_end and line_end != line_start and line_start:

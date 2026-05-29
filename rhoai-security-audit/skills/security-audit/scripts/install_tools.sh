@@ -108,10 +108,13 @@ if [ ! -f "${BIN}/trivy" ]; then
   tar -xzf /tmp/trivy.tar.gz -C "${BIN}" trivy && rm /tmp/trivy.tar.gz
 fi
 
-# --- grype ---
+# --- grype (pinned, no curl|sh) ---
 _install grype
 if [ ! -f "${BIN}/grype" ]; then
-  curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b "${BIN}"
+  GRYPE_VERSION="0.112.0"
+  curl -sSfL -o /tmp/grype.tar.gz \
+    "https://github.com/anchore/grype/releases/download/v${GRYPE_VERSION}/grype_${GRYPE_VERSION}_${OS}_${ARCH_GO}.tar.gz"
+  tar -xzf /tmp/grype.tar.gz -C "${BIN}" grype && rm /tmp/grype.tar.gz
 fi
 
 # --- kube-linter ---
@@ -133,11 +136,12 @@ if [ ! -f "${BIN}/actionlint" ]; then
   tar -xzf /tmp/al.tar.gz -C "${BIN}" actionlint && rm /tmp/al.tar.gz
 fi
 
-# --- osv-scanner ---
+# --- osv-scanner (pinned version) ---
 _install osv-scanner
 if [ ! -f "${BIN}/osv-scanner" ]; then
+  OSV_VERSION="2.3.8"
   curl -sSfL -o "${BIN}/osv-scanner" \
-    "https://github.com/google/osv-scanner/releases/latest/download/osv-scanner_${OS}_${ARCH_GO}"
+    "https://github.com/google/osv-scanner/releases/download/v${OSV_VERSION}/osv-scanner_${OS}_${ARCH_GO}"
   chmod +x "${BIN}/osv-scanner"
 fi
 

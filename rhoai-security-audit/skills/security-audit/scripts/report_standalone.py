@@ -219,7 +219,7 @@ def _github_url(filepath, line_start, line_end, repo_full, ref):
     parts = filepath.replace("\\", "/").split("/")
     for i, p in enumerate(parts):
         if p in ("repo", "repos"):
-            url_path = "/".join(parts[i + 2:]) if i + 2 <= len(parts) else filepath
+            url_path = "/".join(parts[i + 2:]) if i + 2 < len(parts) else filepath
             break
     frag = f"#L{line_start}" if line_start else ""
     if line_end and line_end != line_start and line_start:
@@ -232,7 +232,7 @@ def _file_display(filepath, line_start):
     parts = filepath.replace("\\", "/").split("/")
     for i, p in enumerate(parts):
         if p in ("repo", "repos"):
-            url_path = "/".join(parts[i + 2:]) if i + 2 <= len(parts) else filepath
+            url_path = "/".join(parts[i + 2:]) if i + 2 < len(parts) else filepath
             break
     return f"{url_path}:{line_start}" if line_start else url_path
 
@@ -260,8 +260,8 @@ def _render_card(f, repo_full, branch_ref, commit_ref):
         raw_desc = parts[0].strip()
         rec = parts[1].strip()
 
-    desc = escape(raw_desc[:300])
-    rec = escape(rec[:300])
+    desc = escape(raw_desc[:800])
+    rec = escape(rec[:800])
 
     triage_badge = TRIAGE_BADGES.get(triage_status, "")
     sev_badge = f'<span class="chip" style="background:{color};color:#fff">{sev.upper()}</span>{triage_badge}'
@@ -272,7 +272,7 @@ def _render_card(f, repo_full, branch_ref, commit_ref):
         src_text_color = "#fff" if src_color != "#30363d" else "#8b949e"
         src_badge = f'<span class="chip" style="background:{src_color};color:{src_text_color}">{escape(source)}</span>'
 
-    file_link = f'<a href="{url}" class="file-link" target="_blank">{escape(display)} ↗</a>' if url else f'<code>{escape(display)}</code>'
+    file_link = f'<a href="{escape(url) if url else ""}" class="file-link" target="_blank">{escape(display)} ↗</a>' if url else f'<code>{escape(display)}</code>'
 
     snippet_html = ""
     if snippet:
@@ -334,7 +334,7 @@ def generate_html(scan_dirs):
 
     sev_counts = Counter(f["severity"] for f in all_findings)
     source_counts = Counter(f.get("source", "unknown") for f in all_findings)
-    triage_counts = Counter(f.get("triage", {}).get("status", "sast-only") for f in all_findings)
+    triage_counts = Counter((f.get("triage", {}).get("status", "sast-only") if isinstance(f.get("triage"), dict) else "sast-only") for f in all_findings)
 
     # Donut
     donut_segments = []
@@ -392,7 +392,7 @@ def generate_html(scan_dirs):
             sev_badge = f'<span class="chip" style="background:{SEV_COLORS.get(f["severity"],"#6c757d")};color:#fff;font-size:10px">{f["severity"].upper()}</span>'
             url = _github_url(f.get("file", ""), f.get("line_start", 0), 0, repo_full, commit_ref or branch_ref)
             display = _file_display(f.get("file", ""), f.get("line_start", 0))
-            link = f'<a href="{url}" class="file-link" target="_blank">{escape(display)}</a>' if url else f'<code>{escape(display)}</code>'
+            link = f'<a href="{escape(url) if url else ""}" class="file-link" target="_blank">{escape(display)}</a>' if url else f'<code>{escape(display)}</code>'
             sca_rows.append(f'<tr><td>{sev_badge}</td><td>{escape(f.get("source",""))}</td><td>{link}</td><td>{escape(f.get("title","")[:60])}</td><td>{escape(f.get("recommendation","")[:80])}</td></tr>')
         sca_section = f'''<h3 style="color:#f0f6fc;margin-bottom:12px">Dependency Vulnerabilities ({len(sca_findings)} CVEs)</h3>
     <table><thead><tr><th>Severity</th><th>Tool</th><th>File</th><th>Title</th><th>Fix</th></tr></thead>
