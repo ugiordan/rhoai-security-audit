@@ -23,9 +23,9 @@ Pipeline:
 **Step 1: Init**
 
 ```bash
-DATE=$(date -u +%Y-%m-%d)
+TIMESTAMP=$(date -u +%Y-%m-%d-%H%M%S)
 REPO_SHORT="${REPO##*/}"
-OUTPUT_DIR="output/${REPO_SHORT}/${DATE}"
+OUTPUT_DIR="output/${REPO_SHORT}/${TIMESTAMP}"
 mkdir -p "${OUTPUT_DIR}/raw"
 python3 ${CLAUDE_SKILL_DIR}/scripts/session_log.py init --repo "${REPO}" --output-dir "${OUTPUT_DIR}"
 ```
@@ -75,6 +75,32 @@ Or without context if not available:
 Skill(skill="adversarial-reviewing:adversarial-reviewing", args="${REPO}")
 ```
 
+**CRITICAL: Verify adversarial-reviewing ran its FSM orchestrator.**
+The adversarial-reviewing skill MUST run its Python orchestrator
+(`python3 -m scripts.orchestrator init`), which dispatches 5 specialist
+agents (SEC, PERF, QUAL, CORR, ARCH) with self-refinement iterations.
+If the output only has 3 agents (security, architecture, infrastructure)
+or does not mention SEC/PERF/QUAL/CORR/ARCH prefixes, the skill did NOT
+run correctly. The LLM improvised its own review instead.
+
+After the skill completes, verify the output:
+
+```bash
+# Check output has 5-agent format
+REVIEW_OUTPUT=$(find /tmp -name "REPORT.md" -path "*/adversarial-review-cache-*/outputs/*" -newer "${SESSION_FILE}" 2>/dev/null | head -1)
+if [ -n "${REVIEW_OUTPUT}" ]; then
+  # Copy from FSM cache to output dir
+  CACHE_OUTPUTS=$(dirname "${REVIEW_OUTPUT}")
+  mkdir -p "${OUTPUT_DIR}/raw/adversarial-reviewing"
+  cp "${CACHE_OUTPUTS}"/*.md "${OUTPUT_DIR}/raw/adversarial-reviewing/" 2>/dev/null
+  echo "Adversarial review: FSM orchestrator output found"
+else
+  echo "WARNING: FSM orchestrator output not found. Checking for improvised output."
+  # If the skill improvised, the output will be in the artifacts/ dir or current dir
+  # This is a degraded mode - findings will be less accurate
+fi
+```
+
 After it completes, invoke the semantic scanner:
 
 ```
@@ -114,7 +140,7 @@ The triage step:
 ```bash
 python3 ${CLAUDE_SKILL_DIR}/scripts/report.py "${OUTPUT_DIR}" > "${OUTPUT_DIR}/executive-report.md"
 python3 ${CLAUDE_SKILL_DIR}/scripts/report_mustfix.py "${OUTPUT_DIR}" > "${OUTPUT_DIR}/must-fix-report.md"
-python3 ${CLAUDE_SKILL_DIR}/scripts/report_html.py "${OUTPUT_DIR}"  # MkDocs Material site -> security-report-site/ + .zip
+python3 ${CLAUDE_SKILL_DIR}/scripts/report_html.py "${OUTPUT_DIR}"  # NO redirect! Writes to security-report-site/ dir internally
 python3 ${CLAUDE_SKILL_DIR}/scripts/report_standalone.py "${OUTPUT_DIR}" > "${OUTPUT_DIR}/security-report.html"  # self-contained
 python3 ${CLAUDE_SKILL_DIR}/scripts/report_mustfix.py "${OUTPUT_DIR}" --html > "${OUTPUT_DIR}/must-fix-report.html"
 python3 ${CLAUDE_SKILL_DIR}/scripts/report_docx.py "${OUTPUT_DIR}"
@@ -137,7 +163,7 @@ Show the trends table and present the executive report to the user.
 | Flag | Effect |
 |------|--------|
 | `--skip-ai` | Skip AI skills (Step 3), SAST only |
-| `--reports-only` | Skip Steps 1-4, regenerate reports from existing data in `output/<repo>/<date>/` |
+| `--reports-only` | Skip Steps 1-4, regenerate reports from existing data in `output/<repo>/<timestamp>/` (use most recent directory) |
 
 When `--reports-only` is passed, skip directly to Step 4b (triage)
 and Step 5 (reports). The raw data must already exist in the output
