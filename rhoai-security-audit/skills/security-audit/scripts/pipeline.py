@@ -94,9 +94,29 @@ def step_sast_scan(repo, output_dir, branch="main"):
     log("Step 2: SAST scan complete")
 
 
-def step_ai_skills(repo, output_dir, session_file, sandbox=True):
+def _clear_ai_caches():
+    """Remove adversarial-review and security-scan caches to force fresh runs."""
+    import glob as _glob
+    patterns = [
+        "/tmp/adversarial-review-cache-*",
+        str(Path.home() / ".claude/plugins/cache/*/adversarial-reviewing/*/skills/adversarial-reviewing/.adversarial-review-cache/*"),
+        ".security-scan/security-scan-*",
+    ]
+    removed = 0
+    for pat in patterns:
+        for d in _glob.glob(pat):
+            if Path(d).is_dir():
+                shutil.rmtree(d, ignore_errors=True)
+                removed += 1
+    return removed
+
+
+def step_ai_skills(repo, output_dir, session_file, sandbox=True, no_cache=False):
     """Step 3: Invoke AI skills in isolated containers."""
     log("Step 3: AI skills")
+    if no_cache:
+        removed = _clear_ai_caches()
+        log(f"  Cleared {removed} AI skill caches (--no-cache)")
     runtime = detect_container_runtime() if sandbox else None
 
     for skill_cfg in AI_SKILLS:
@@ -412,6 +432,7 @@ def main():
     parser.add_argument("--branch", default="main", help="Branch to scan")
     parser.add_argument("--skip-ai", action="store_true", help="Skip AI skills (SAST only)")
     parser.add_argument("--no-sandbox", action="store_true", help="Run AI skills without container isolation")
+    parser.add_argument("--no-cache", action="store_true", help="Clear AI skill caches, force fresh review")
     parser.add_argument("--reports-only", action="store_true", help="Regenerate reports from existing data")
     parser.add_argument("--scan-dir", help="Existing scan directory for --reports-only")
     args = parser.parse_args()
@@ -458,7 +479,8 @@ def main():
     step_sast_scan(repo, output_dir, args.branch)
 
     if not args.skip_ai:
-        step_ai_skills(repo, output_dir, session_file, sandbox=not args.no_sandbox)
+        step_ai_skills(repo, output_dir, session_file,
+                       sandbox=not args.no_sandbox, no_cache=args.no_cache)
 
     step_normalize_dedup_triage(output_dir)
     step_reports(output_dir)
