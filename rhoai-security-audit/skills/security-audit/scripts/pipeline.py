@@ -547,17 +547,24 @@ def main():
         from concurrent.futures import ThreadPoolExecutor, as_completed
 
         log("Step 2: SAST scan + AI skills (parallel)")
+        failed = []
         with ThreadPoolExecutor(max_workers=2) as pool:
             sast_future = pool.submit(step_sast_scan, repo, output_dir, args.branch)
             ai_future = pool.submit(
                 step_ai_skills, repo, output_dir, session_file,
                 not args.no_sandbox, args.no_cache,
             )
-            for future in as_completed([sast_future, ai_future]):
+            for name, future in [("SAST", sast_future), ("AI skills", ai_future)]:
                 try:
                     future.result()
                 except Exception as e:
-                    log(f"  Step failed: {e}", level="WARN")
+                    log(f"  {name} FAILED: {e}", level="ERROR")
+                    failed.append(name)
+
+        if "SAST" in failed:
+            log("SAST scan failed. Cannot produce reports without scan data.", level="ERROR")
+            step_finalize(output_dir, session_file)
+            sys.exit(1)
 
     step_normalize_dedup_triage(output_dir)
     step_reports(output_dir)
