@@ -227,17 +227,19 @@ def _invoke_ai_skill(repo, skill_id, name, runtime, sandbox):
         workspace_path = _setup_scanner_workspace(repo)
 
     prompt = (
-        f'/security-audit:security-audit is invoking this skill. '
-        f'Run it on: {repo}\n'
-        f'Skill(skill="{skill_id}", args="{repo}")'
+        f'Run this skill on the repository {repo}. '
+        f'Use the Skill tool: Skill(skill="{skill_id}", args="{repo}")'
     )
 
     if workspace_path:
         prompt += f'\n<workspace>{os.path.abspath(workspace_path)}</workspace>'
 
+    plugin_dir = Path.home() / ".claude" / "plugins" / "cache"
     claude_args = [
-        "claude", "-p", prompt,
-        "--allowedTools", "Read,Write,Grep,Glob,Skill,Agent",
+        "claude",
+        "--add-dir", str(plugin_dir),
+        "-p", prompt,
+        "--allowedTools", "Bash,Read,Write,Grep,Glob,Skill,Agent",
         "--max-turns", "100",
     ]
 
@@ -258,6 +260,7 @@ def _run_in_openshell(claude_args, name):
         "openshell", "sandbox", "create",
         "--name", sandbox_name,
         "--no-keep",
+        "--auto-providers",
     ]
     if policy_file.exists():
         cmd.extend(["--policy", str(policy_file)])
