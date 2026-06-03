@@ -147,14 +147,62 @@ def _clear_ai_caches():
     return removed
 
 
+def _resolve_arch_context(arch_context, repo, output_dir):
+    """Resolve --arch-context to a local directory path.
+
+    Accepts:
+      - Local path: /tmp/arch-output (used as-is if it exists)
+      - GitHub repo: owner/repo (downloads matching artifact via gh CLI)
+    """
+    if not arch_context:
+        return None
+
+    # Local path
+    if os.path.isdir(arch_context):
+        log(f"  Architecture context (local): {arch_context}")
+        return arch_context
+
+    # GitHub repo reference (contains / but not a local path)
+    if "/" in arch_context and not arch_context.startswith("/"):
+        repo_short = repo.split("/")[-1]
+        ctx_dir = Path(output_dir) / "raw" / "arch-context"
+
+        try:
+            result = subprocess.run(
+                ["gh", "api", f"repos/{arch_context}/actions/artifacts",
+                 "--jq", f'.artifacts[] | select(.name | endswith("{repo_short}")) | .name'],
+                capture_output=True, text=True, timeout=15,
+            )
+            artifact_name = result.stdout.strip().split("\n")[0] if result.stdout.strip() else ""
+            if not artifact_name:
+                log(f"  No architecture artifact for {repo_short} in {arch_context}", level="WARN")
+                return None
+
+            ctx_dir.mkdir(parents=True, exist_ok=True)
+            subprocess.run(
+                ["gh", "run", "download", "--repo", arch_context,
+                 "--name", artifact_name, "--dir", str(ctx_dir)],
+                capture_output=True, text=True, timeout=60,
+            )
+
+            for p in ctx_dir.rglob("component-architecture.json"):
+                log(f"  Architecture context (downloaded): {artifact_name}")
+                return str(p.parent)
+        except Exception as e:
+            log(f"  Failed to fetch arch context from {arch_context}: {e}", level="WARN")
+        return None
+
+    log(f"  Architecture context path not found: {arch_context}", level="WARN")
+    return None
+
+
 def step_ai_skills(repo, output_dir, session_file, sandbox=True, no_cache=False, arch_context=None):
     """Step 3: Invoke AI skills with optional architecture context."""
     log("Step 3: AI skills")
     if no_cache:
         removed = _clear_ai_caches()
         log(f"  Cleared {removed} AI skill caches (--no-cache)")
-    if arch_context:
-        log(f"  Architecture context: {arch_context}")
+    arch_context = _resolve_arch_context(arch_context, repo, output_dir)
     runtime = detect_container_runtime() if sandbox else None
 
     for skill_cfg in AI_SKILLS:
