@@ -168,12 +168,22 @@ def _resolve_arch_context(arch_context, repo, output_dir):
         ctx_dir = Path(output_dir) / "raw" / "arch-context"
 
         try:
-            result = subprocess.run(
-                ["gh", "api", f"repos/{arch_context}/actions/artifacts",
-                 "--jq", f'.artifacts[] | select(.name | endswith("{repo_short}")) | .name'],
-                capture_output=True, text=True, timeout=15,
-            )
-            artifact_name = result.stdout.strip().split("\n")[0] if result.stdout.strip() else ""
+            # Try org-specific artifact names (odh-org-repo, rhoai-org-repo)
+            repo_org = repo.split("/")[0] if "/" in repo else ""
+            prefixes = ["odh", "rhoai"] if "opendatahub" in repo_org else ["rhoai", "odh"]
+            artifact_name = ""
+            for prefix in prefixes:
+                candidate = f"{prefix}-{repo_org}-{repo_short}"
+                result = subprocess.run(
+                    ["gh", "api",
+                     f"repos/{arch_context}/actions/artifacts?name={candidate}",
+                     "--jq", ".artifacts[0].name"],
+                    capture_output=True, text=True, timeout=15,
+                )
+                name = result.stdout.strip()
+                if name and name != "null":
+                    artifact_name = name
+                    break
             if not artifact_name:
                 log(f"  No architecture artifact for {repo_short} in {arch_context}", level="WARN")
                 return None
