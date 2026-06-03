@@ -148,12 +148,19 @@ def _clear_ai_caches():
 
 
 def step_ai_skills(repo, output_dir, session_file, sandbox=True, no_cache=False):
-    """Step 3: Invoke AI skills in isolated containers."""
+    """Step 3: Invoke AI skills with optional architecture context."""
     log("Step 3: AI skills")
     if no_cache:
         removed = _clear_ai_caches()
         log(f"  Cleared {removed} AI skill caches (--no-cache)")
     runtime = detect_container_runtime() if sandbox else None
+
+    # Fetch architecture context for adversarial review enrichment
+    arch_context = _fetch_arch_context(repo, output_dir)
+    if arch_context:
+        log(f"  Architecture context: {arch_context}")
+    else:
+        log("  No architecture context available (optional)")
 
     for skill_cfg in AI_SKILLS:
         name = skill_cfg["name"]
@@ -168,7 +175,7 @@ def step_ai_skills(repo, output_dir, session_file, sandbox=True, no_cache=False)
         )
 
         start = time.time()
-        success = _invoke_ai_skill(repo, skill_id, name, runtime, sandbox)
+        success = _invoke_ai_skill(repo, skill_id, name, runtime, sandbox, arch_context)
         duration = time.time() - start
 
         if success:
@@ -218,17 +225,54 @@ def _setup_scanner_workspace(repo):
     return str(workspace)
 
 
-def _invoke_ai_skill(repo, skill_id, name, runtime, sandbox):
-    """Run a single AI skill, optionally inside a sandboxed container."""
+def _fetch_arch_context(repo, output_dir):
+    """Download pre-generated architecture context from ugiordan/architecture-analyzer."""
+    repo_short = repo.split("/")[-1]
+    ctx_dir = Path(output_dir) / "raw" / "arch-context"
+
+    try:
+        result = subprocess.run(
+            ["gh", "api", "repos/ugiordan/architecture-analyzer/actions/artifacts",
+             "--jq", f'.artifacts[] | select(.name | endswith("{repo_short}")) | .name'],
+            capture_output=True, text=True, timeout=15,
+        )
+        artifact_name = result.stdout.strip().split("\n")[0] if result.stdout.strip() else ""
+        if not artifact_name:
+            return None
+
+        ctx_dir.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["gh", "run", "download", "--repo", "ugiordan/architecture-analyzer",
+             "--name", artifact_name, "--dir", str(ctx_dir)],
+            capture_output=True, text=True, timeout=60,
+        )
+
+        # Find the component-architecture.json
+        for p in ctx_dir.rglob("component-architecture.json"):
+            arch_dir = str(p.parent)
+            log(f"  Architecture context found: {artifact_name}")
+            return arch_dir
+    except Exception:
+        pass
+    return None
+
+
+def _invoke_ai_skill(repo, skill_id, name, runtime, sandbox, arch_context=None):
+    """Run a single AI skill, optionally inside an OpenShell sandbox."""
 
     # Set up workspace for scanner skill (its hooks don't fire in pipeline mode)
     workspace_path = None
     if name == "semantic-scan":
         workspace_path = _setup_scanner_workspace(repo)
 
+    # Build skill args with optional architecture context
+    skill_args = repo
+    if name == "adversarial-reviewing" and arch_context:
+        skill_args = f"{repo} --context architecture={arch_context}"
+
     prompt = (
         f'Run this skill on the repository {repo}. '
-        f'Use the Skill tool: Skill(skill="{skill_id}", args="{repo}")'
+        f'Use the Skill tool: Skill(skill="{skill_id}", args="{skill_args}")'
     )
 
     if workspace_path:
