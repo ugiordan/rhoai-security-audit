@@ -589,6 +589,16 @@ def _finding_block(f, repo_full, branch):
     elif origin == "ai":
         triage_row = "    | **Triage** | :material-brain: **AI-only** (found by AI review only) |\n"
 
+    confidence_row = ""
+    if origin == "ai":
+        conf_val = float(f.get("confidence", 0))
+        if conf_val >= 0.8:
+            confidence_row = "    | **Confidence** | :material-shield-check: **HIGH** (code-verified, multi-agent confirmed) |\n"
+        elif conf_val >= 0.6:
+            confidence_row = "    | **Confidence** | :material-shield-alert: **MEDIUM** (plausible, not fully verified) |\n"
+        else:
+            confidence_row = "    | **Confidence** | :material-shield-off: **LOW** (speculative or challenged) |\n"
+
     md = f'!!! {admon_type} "{title}"\n'
     md += f"\n"
     md += f"    | | |\n"
@@ -597,6 +607,7 @@ def _finding_block(f, repo_full, branch):
     md += f"    | **Source** | {source} |\n"
     md += f"    | **File** | {file_link} |\n"
     md += triage_row
+    md += confidence_row
     md += f"\n"
 
     prose, impact, evidence, desc_rem = _split_description(desc)

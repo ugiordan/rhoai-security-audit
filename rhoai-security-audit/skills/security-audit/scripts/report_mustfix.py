@@ -437,7 +437,19 @@ def _render_mustfix_card(f, repo_full, ref, card_idx):
     rec = esc(rec[:800])
 
     triage_badge = TRIAGE_BADGES.get(triage_status, "")
-    sev_badge = f'<span class="chip" style="background:{color};color:#fff">{sev.upper()}</span>{triage_badge}'
+
+    confidence = f.get("confidence", 0)
+    conf_badge = ""
+    if f.get("origin") == "ai" and confidence:
+        conf_val = float(confidence)
+        if conf_val >= 0.8:
+            conf_badge = '<span class="chip" style="background:#166534;font-size:9px" title="Code-verified, multi-agent confirmed">HIGH conf</span>'
+        elif conf_val >= 0.6:
+            conf_badge = '<span class="chip" style="background:#854d0e;font-size:9px" title="Plausible but not fully verified">MED conf</span>'
+        else:
+            conf_badge = '<span class="chip" style="background:#991b1b;font-size:9px" title="Speculative or challenged">LOW conf</span>'
+
+    sev_badge = f'<span class="chip" style="background:{color};color:#fff">{sev.upper()}</span>{triage_badge}{conf_badge}'
 
     src_badge = ""
     if source:

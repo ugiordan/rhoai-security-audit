@@ -264,7 +264,19 @@ def _render_card(f, repo_full, branch_ref, commit_ref):
     rec = escape(rec[:800])
 
     triage_badge = TRIAGE_BADGES.get(triage_status, "")
-    sev_badge = f'<span class="chip" style="background:{color};color:#fff">{sev.upper()}</span>{triage_badge}'
+
+    confidence = f.get("confidence", 0)
+    conf_badge = ""
+    if f.get("origin") == "ai" and confidence:
+        conf_val = float(confidence)
+        if conf_val >= 0.8:
+            conf_badge = '<span class="chip" style="background:#166534;font-size:9px" title="Code-verified, multi-agent confirmed">HIGH conf</span>'
+        elif conf_val >= 0.6:
+            conf_badge = '<span class="chip" style="background:#854d0e;font-size:9px" title="Plausible but not fully verified">MED conf</span>'
+        else:
+            conf_badge = '<span class="chip" style="background:#991b1b;font-size:9px" title="Speculative or challenged">LOW conf</span>'
+
+    sev_badge = f'<span class="chip" style="background:{color};color:#fff">{sev.upper()}</span>{triage_badge}{conf_badge}'
 
     src_badge = ""
     if source:
@@ -518,9 +530,11 @@ code {{ background:#21262d; padding:1px 5px; border-radius:3px; font-size:11px; 
 </div>
 
 <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:11px;color:#8b949e;margin:8px 0 4px;padding:6px 0;border-bottom:1px solid #21262d">
-    <span><span class="chip" style="background:#16a34a">CORR</span> Corroborated: found by both SAST tools and AI review</span>
-    <span><span class="chip" style="background:#2563eb">AI</span> AI-only: logic/semantic issue found by AI review only</span>
-    <span style="color:#4a5568">No badge = SAST tool finding only</span>
+    <span><span class="chip" style="background:#16a34a">CORR</span> Corroborated: found by both SAST and AI</span>
+    <span><span class="chip" style="background:#2563eb">AI</span> AI-only finding</span>
+    <span><span class="chip" style="background:#166534;font-size:9px">HIGH conf</span> Code-verified</span>
+    <span><span class="chip" style="background:#854d0e;font-size:9px">MED conf</span> Plausible</span>
+    <span><span class="chip" style="background:#991b1b;font-size:9px">LOW conf</span> Speculative</span>
 </div>
 
 <div class="tabs">

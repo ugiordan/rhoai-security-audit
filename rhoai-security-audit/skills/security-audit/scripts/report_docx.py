@@ -466,6 +466,10 @@ def _add_finding_detail(doc, f, index, repo_full, branch_ref, commit_ref):
         meta_parts.append(f"Rule: {rule_id}")
     if category:
         meta_parts.append(f"Category: {category}")
+    if f.get("origin") == "ai":
+        conf_val = float(f.get("confidence", 0))
+        conf_label = "HIGH" if conf_val >= 0.8 else "MEDIUM" if conf_val >= 0.6 else "LOW"
+        meta_parts.append(f"Confidence: {conf_label}")
     if meta_parts:
         _add_body(doc, " | ".join(meta_parts), color=RH_GREY)
 
