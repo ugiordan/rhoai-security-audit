@@ -28,6 +28,31 @@ SCRIPTS_DIR = SKILL_DIR / "scripts"
 
 OPENSHELL_POLICY = SCRIPTS_DIR / "openshell-policy.yaml"
 
+
+def detect_harness():
+    """Detect whether running under Claude Code or OpenCode.
+
+    Priority: explicit env var > CLAUDE_SKILL_DIR > claude binary > opencode binary.
+    Claude Code preferred when both installed (backward compat).
+    Fails loudly when nothing is available.
+    """
+    harness_override = os.environ.get("SECURITY_AUDIT_HARNESS", "").lower()
+    if harness_override in ("claude", "opencode"):
+        return harness_override
+
+    if os.environ.get("CLAUDE_SKILL_DIR"):
+        return "claude"
+
+    if shutil.which("claude"):
+        return "claude"
+
+    if shutil.which("opencode"):
+        return "opencode"
+
+    log("No AI harness found. Install Claude Code or OpenCode.", level="ERROR")
+    sys.exit(1)
+
+
 AI_SKILLS = [
     {
         "name": "adversarial-reviewing",
