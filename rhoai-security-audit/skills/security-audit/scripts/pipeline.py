@@ -168,11 +168,12 @@ def _resolve_arch_context(arch_context, repo, output_dir):
         ctx_dir = Path(output_dir) / "raw" / "arch-context"
 
         try:
-            # Try org-specific artifact names (odh-org-repo, rhoai-org-repo)
+            # Artifact naming: {prefix}-{org}-{repo}
+            # Try exact org match first, then search by repo name suffix
             repo_org = repo.split("/")[0] if "/" in repo else ""
-            prefixes = ["odh", "rhoai"] if "opendatahub" in repo_org else ["rhoai", "odh"]
             artifact_name = ""
-            for prefix in prefixes:
+
+            for prefix in ["odh", "rhoai"]:
                 candidate = f"{prefix}-{repo_org}-{repo_short}"
                 result = subprocess.run(
                     ["gh", "api",
@@ -184,6 +185,19 @@ def _resolve_arch_context(arch_context, repo, output_dir):
                 if name and name != "null":
                     artifact_name = name
                     break
+
+            # Fallback: paginated search by repo name suffix (handles fork/upstream mismatch)
+            if not artifact_name:
+                result = subprocess.run(
+                    ["gh", "api", f"repos/{arch_context}/actions/artifacts",
+                     "--paginate",
+                     "--jq", f'.artifacts[] | select(.name | endswith("-{repo_short}")) | .name'],
+                    capture_output=True, text=True, timeout=30,
+                )
+                names = [n for n in (result.stdout or "").strip().split("\n") if n]
+                if names:
+                    odh = [n for n in names if n.startswith("odh-")]
+                    artifact_name = odh[0] if odh else names[0]
             if not artifact_name:
                 log(f"  No architecture artifact for {repo_short} in {arch_context}", level="WARN")
                 return None
