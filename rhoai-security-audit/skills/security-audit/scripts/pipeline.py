@@ -305,8 +305,10 @@ def _invoke_ai_skill(repo, skill_id, name, runtime, sandbox, arch_context=None):
 
     # Build skill args with optional architecture context
     skill_args = repo
-    if name == "adversarial-reviewing" and arch_context:
-        skill_args = f"{repo} --context architecture={arch_context}"
+    if name == "adversarial-reviewing":
+        skill_args = f"{repo} --no-budget"
+        if arch_context:
+            skill_args += f" --context architecture={arch_context}"
 
     prompt = (
         f'Run this skill on the repository {repo}. '
