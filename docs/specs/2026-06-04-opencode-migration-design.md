@@ -1,7 +1,7 @@
 # LLM-Agnostic Skill Framework: OpenCode Migration
 
 **Date:** 2026-06-04
-**Status:** Design
+**Status:** Design (v2, post-adversarial review)
 **Branch:** `feat/opencode-migration`
 
 ## Problem
@@ -30,19 +30,37 @@ is identical between Claude Code and OpenCode, but the orchestration layer
 
 ### Harness Detection
 
-`pipeline.py` detects the active harness at startup via environment variables
-and binary availability:
+`pipeline.py` detects the active harness at startup. Priority order ensures
+backward compatibility (Claude Code preferred when both are installed) and
+fails clearly when nothing is available:
 
 ```python
 def detect_harness():
+    # 1. Explicit env var (highest priority, not spoofable via repo files)
+    harness_override = os.environ.get("SECURITY_AUDIT_HARNESS", "").lower()
+    if harness_override in ("claude", "opencode"):
+        return harness_override
+
+    # 2. Claude Code env var (set by Claude Code itself, not user-configurable)
     if os.environ.get("CLAUDE_SKILL_DIR"):
         return "claude"
-    if os.environ.get("OPENCODE_CONFIG") or shutil.which("opencode"):
-        return "opencode"
+
+    # 3. Claude Code binary (backward compat: prefer claude when both installed)
     if shutil.which("claude"):
         return "claude"
-    return "opencode"
+
+    # 4. OpenCode binary
+    if shutil.which("opencode"):
+        return "opencode"
+
+    # 5. No harness found: fail loudly
+    log("No AI harness found. Install Claude Code or OpenCode.", level="ERROR")
+    sys.exit(1)
 ```
+
+The `SECURITY_AUDIT_HARNESS` env var lets users explicitly choose, overriding
+auto-detection. This is the only env var used for harness selection: it's set
+by the user in their shell profile or CI config, not by repo files.
 
 ### AI Skill Invocation
 
@@ -57,17 +75,60 @@ if harness == "claude":
         "--max-turns", "100",
     ]
 elif harness == "opencode":
-    cmd = [
-        "opencode", "run",
-        "--model", model,
-        "--agent", "build",
+    cmd = ["opencode", "run"]
+    if model:
+        cmd.extend(["--model", model])
+    cmd.extend([
+        "--permission", json.dumps({
+            "bash": "allow", "read": "allow", "edit": "allow",
+            "glob": "allow", "grep": "allow", "skill": "allow",
+            "task": "allow",
+        }),
         prompt,
-    ]
+    ])
 ```
 
 Key differences:
-- Claude Code: `claude -p "prompt"` with `--add-dir` for plugin discovery
-- OpenCode: `opencode run "prompt"` with `--model` for provider selection
+- Claude Code: `claude -p "prompt"` with `--allowedTools` whitelist
+- OpenCode: `opencode run "prompt"` with `--permission` JSON for tool allowlist
+  (NOT `--dangerously-skip-permissions`, which disables all checks)
+- Model is only passed when explicitly set (avoids `--model None`)
+
+### Sandboxing
+
+OpenShell sandboxing applies to both harnesses. The sandbox wraps the entire
+subprocess call regardless of whether it's `claude` or `opencode`:
+
+```python
+if sandbox and _ensure_openshell():
+    return _run_in_openshell(cmd, name)
+else:
+    return _run_locally(cmd)
+```
+
+The OpenShell policy restricts network egress to `api.anthropic.com:443` (or
+the configured provider endpoint). For non-Anthropic providers, the policy
+must be updated to allow the provider's API endpoint. `pipeline.py` generates
+the policy dynamically based on the configured model's provider:
+
+```python
+PROVIDER_ENDPOINTS = {
+    "anthropic": "api.anthropic.com",
+    "openai": "api.openai.com",
+    "google": "generativelanguage.googleapis.com",
+}
+```
+
+When no container runtime is available AND `--no-sandbox` is NOT set,
+the pipeline fails with an error (fail-closed, not silent fallback):
+
+```python
+if sandbox and not _ensure_openshell():
+    if not detect_container_runtime():
+        log("No sandbox available (no OpenShell, no container runtime). "
+            "Use --no-sandbox to run without isolation.", level="ERROR")
+        sys.exit(1)
+```
 
 ### Directory Structure
 
@@ -106,7 +167,10 @@ rhoai-security-audit/
 Both harnesses discover skills from the `skills/` directory. Claude Code uses
 `--add-dir`, OpenCode uses config path in `opencode.json`.
 
-### SKILL.md Format (Unchanged)
+### SKILL.md Format
+
+The SKILL.md delegates to pipeline.py. Both harnesses resolve the skill
+directory differently, so we use a portable invocation:
 
 ```yaml
 ---
@@ -116,21 +180,13 @@ description: Runs SAST tools and AI skills, generates security reports.
 
 # Security Audit
 
-python3 ${CLAUDE_SKILL_DIR}/scripts/pipeline.py $ARGUMENTS
+python3 ${CLAUDE_SKILL_DIR:-.}/scripts/pipeline.py $ARGUMENTS
 ```
 
-The `${CLAUDE_SKILL_DIR}` variable is set by Claude Code. OpenCode has no
-equivalent variable. For OpenCode compatibility, the SKILL.md should use a
-command that works in both:
-
-```bash
-python3 "$(dirname "$(find . -path '*/security-audit/scripts/pipeline.py' | head -1)")/pipeline.py" $ARGUMENTS
-```
-
-Or simpler: `pipeline.py` resolves its own location via
-`Path(__file__).resolve().parent.parent` so it works regardless of how it's
-invoked. The SKILL.md can fall back to discovering pipeline.py relative to
-itself.
+The `${CLAUDE_SKILL_DIR:-.}` syntax falls back to `.` (current directory) when
+the variable isn't set (OpenCode case). Since `pipeline.py` resolves its own
+location via `Path(__file__).resolve().parent.parent`, the actual skill
+directory is always correct regardless of invocation path.
 
 ### Model Configuration
 
@@ -154,29 +210,43 @@ Users swap providers by changing `model`:
 `pipeline.py` reads the model from:
 1. `--model` CLI flag (highest priority)
 2. `SECURITY_AUDIT_MODEL` env var
-3. harness default (whatever the user configured)
+3. Harness default (whatever the user configured in their profile)
+
+When no model is specified, the `--model` flag is omitted entirely (not
+passed as `--model None`).
 
 ### Permissions
 
 Claude Code: `--allowedTools "Bash,Read,Write,Grep,Glob,Skill,Agent"`
 
-OpenCode: permissions in `opencode.json`:
-```json
-{
-  "permission": {
-    "bash": "allow",
-    "read": "allow",
-    "edit": "allow",
-    "glob": "allow",
-    "grep": "allow",
-    "skill": "allow",
-    "task": "allow"
-  }
-}
+OpenCode: `--permission '{"bash":"allow","read":"allow",...}'` (inline JSON)
+
+Both are explicit tool allowlists. Neither uses blanket permission bypasses.
+The `--dangerously-skip-permissions` flag is NOT used because it disables all
+permission checks, granting unrestricted tool access. Instead, we pass the
+specific permission set needed.
+
+### GitLab CI Integration
+
+The Jira webhook input must be validated before use:
+
+```yaml
+security-audit:
+  stage: scan
+  variables:
+    REPO: $JIRA_REPO_URL
+  script:
+    - |
+      if ! echo "$REPO" | grep -qE '^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$'; then
+        echo "ERROR: Invalid repo format: $REPO" >&2
+        exit 1
+      fi
+    - python3 pipeline.py "$REPO"
 ```
 
-`pipeline.py` passes `--dangerously-skip-permissions` for OpenCode headless
-runs (same as Claude Code's `--allowedTools` pattern for non-interactive use).
+The `$REPO` variable is always quoted in shell context to prevent injection.
+`pipeline.py` also validates repo format internally as a defense-in-depth
+measure.
 
 ### Adversarial-Reviewing Integration
 
@@ -193,23 +263,28 @@ and dispatches agents via whichever tool is available.
 ### Testing Strategy
 
 1. **Unit tests**: existing test_dedup.py and test_triage.py (harness-independent)
-2. **E2E test with Claude Code**: `claude -p "Skill(skill='security-audit', args='repo')""`
-3. **E2E test with OpenCode**: `opencode run "Use skill security-audit on repo"`
-4. **Comparison test**: run both on same repo, verify same SAST findings, similar AI findings
-5. **Provider swap test**: run with OpenCode + different model, verify pipeline completes
+2. **Harness detection tests**: verify priority order, env var override, fail-closed
+3. **E2E test with Claude Code**: full pipeline, verify reports
+4. **E2E test with OpenCode**: full pipeline with Claude model, verify reports
+5. **Comparison test**: run both on same repo, verify same SAST findings
+6. **Provider swap test**: run with OpenCode + different model, verify completion
+7. **Sandbox test**: verify OpenShell policy blocks non-provider endpoints
 
 ### Migration Steps
 
 1. Create `feat/opencode-migration` branch
-2. Add `detect_harness()` to pipeline.py
-3. Add OpenCode subprocess path (`opencode run`)
-4. Create `opencode.json` with provider config
-5. Add `--model` flag to pipeline.py
-6. Test with Claude Code (regression)
-7. Install OpenCode, test with OpenCode + Claude model
-8. Test with OpenCode + different model (e.g., GPT)
-9. Update SKILL.md to document both harnesses
-10. Merge after all tests pass
+2. Add `detect_harness()` with correct priority order to pipeline.py
+3. Add OpenCode subprocess path with `--permission` (not `--dangerously-skip-permissions`)
+4. Add dynamic OpenShell policy based on provider
+5. Make sandbox fail-closed (no silent fallback)
+6. Add `--model` flag with None guard
+7. Create `opencode.json` with provider config
+8. Test with Claude Code (regression)
+9. Install OpenCode, test with OpenCode + Claude model
+10. Test with OpenCode + different model
+11. Verify sandbox blocks non-provider endpoints
+12. Update SKILL.md with portable invocation
+13. Merge after all tests pass
 
 ### Risk Assessment
 
@@ -218,8 +293,12 @@ and dispatches agents via whichever tool is available.
 | OpenCode skill discovery differs | SKILL.md format is identical, only paths differ |
 | Agent dispatch works differently | FSM orchestrator is Python, not harness-dependent |
 | Provider-specific prompt differences | pipeline.py prompt is model-agnostic |
-| OpenCode headless mode less mature | Fallback to Claude Code if OpenCode fails |
-| Breaking existing Claude Code users | Dual support, no removals |
+| OpenCode headless mode less mature | Fallback to Claude Code (preferred in detection) |
+| Breaking existing Claude Code users | Dual support, Claude preferred in auto-detection |
+| Harness detection spoofing | Only `SECURITY_AUDIT_HARNESS` env var honored, not repo files |
+| Silent sandbox bypass | Fail-closed when no sandbox available without `--no-sandbox` |
+| Unrestricted permissions | Explicit allowlist, never `--dangerously-skip-permissions` |
+| OpenCode path skips sandboxing | Same sandbox wraps both harness subprocess calls |
 
 ## Success Criteria
 
@@ -228,3 +307,5 @@ and dispatches agents via whichever tool is available.
 3. User can swap model by changing one config line
 4. All existing unit tests pass
 5. E2E pipeline produces valid reports with both harnesses
+6. Sandbox is enforced by default (fail-closed without `--no-sandbox`)
+7. No `--dangerously-skip-permissions` in any code path
