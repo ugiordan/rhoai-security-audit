@@ -26,8 +26,6 @@ from pathlib import Path
 SKILL_DIR = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = SKILL_DIR / "scripts"
 
-OPENSHELL_POLICY = SCRIPTS_DIR / "openshell-policy.yaml"
-
 
 def detect_harness():
     """Detect whether running under Claude Code or OpenCode.
@@ -79,6 +77,61 @@ def _build_ai_command(harness, prompt, model=None):
         return cmd
     else:
         raise ValueError(f"Unknown harness: {harness}")
+
+
+PROVIDER_ENDPOINTS = {
+    "anthropic": "api.anthropic.com",
+    "openai": "api.openai.com",
+    "google": "generativelanguage.googleapis.com",
+}
+
+OPENSHELL_POLICY_TEMPLATE = """version: 1
+filesystem_policy:
+  include_workdir: true
+  read_only:
+    - /usr
+    - /lib
+    - /proc
+    - /dev/urandom
+    - /etc
+  read_write:
+    - /tmp
+    - /dev/null
+network_policies:
+  llm_api:
+    name: llm-api
+    endpoints:
+      - host: {provider_host}
+        port: 443
+        protocol: rest
+        enforcement: enforce
+        access: full
+        request_body_credential_rewrite: true
+    binaries:
+      - path: /usr/local/bin/claude
+      - path: /usr/local/bin/opencode
+      - path: /usr/bin/node
+      - path: /usr/bin/curl
+"""
+
+
+def _generate_openshell_policy(model):
+    """Generate OpenShell network policy for the model's provider."""
+    if not model:
+        return OPENSHELL_POLICY_TEMPLATE.format(provider_host="api.anthropic.com")
+
+    provider = model.split("/")[0] if "/" in model else model
+    host = PROVIDER_ENDPOINTS.get(provider)
+
+    if not host:
+        host = os.environ.get("SECURITY_AUDIT_PROVIDER_HOST")
+        if not host:
+            known = ", ".join(PROVIDER_ENDPOINTS.keys())
+            log(f"Unknown provider '{provider}'. Set SECURITY_AUDIT_PROVIDER_HOST "
+                f"or use a known provider ({known}).", level="ERROR")
+            sys.exit(1)
+
+    return OPENSHELL_POLICY_TEMPLATE.format(provider_host=host)
 
 
 AI_SKILLS = [
@@ -276,7 +329,7 @@ def _resolve_arch_context(arch_context, repo, output_dir):
     return None
 
 
-def step_ai_skills(repo, output_dir, session_file, sandbox=True, no_cache=False, arch_context=None):
+def step_ai_skills(repo, output_dir, session_file, sandbox=True, no_cache=False, arch_context=None, model=None):
     """Step 3: Invoke AI skills with optional architecture context."""
     log("Step 3: AI skills")
     if no_cache:
@@ -298,7 +351,7 @@ def step_ai_skills(repo, output_dir, session_file, sandbox=True, no_cache=False,
         )
 
         start = time.time()
-        success = _invoke_ai_skill(repo, skill_id, name, runtime, sandbox, arch_context)
+        success = _invoke_ai_skill(repo, skill_id, name, runtime, sandbox, arch_context, model=model)
         duration = time.time() - start
 
         if success:
@@ -348,7 +401,7 @@ def _setup_scanner_workspace(repo):
     return str(workspace)
 
 
-def _invoke_ai_skill(repo, skill_id, name, _runtime, sandbox, arch_context=None):
+def _invoke_ai_skill(repo, skill_id, name, _runtime, sandbox, arch_context=None, model=None):
     """Run a single AI skill, optionally inside an OpenShell sandbox."""
 
     # Set up workspace for scanner skill (its hooks don't fire in pipeline mode)
@@ -382,40 +435,51 @@ def _invoke_ai_skill(repo, skill_id, name, _runtime, sandbox, arch_context=None)
 
     if sandbox:
         if _ensure_openshell():
-            return _run_in_openshell(claude_args, name)
+            return _run_in_openshell(claude_args, name, model=model)
         else:
             log(f"  OpenShell not available. Use --no-sandbox to run without isolation.", level="ERROR")
             return False
     return _run_locally(claude_args)
 
 
-def _run_in_openshell(claude_args, name):
-    """Run claude command inside an OpenShell sandbox with network policy."""
-    policy_file = SCRIPTS_DIR / "openshell-policy.yaml"
+def _run_in_openshell(claude_args, name, model=None):
+    """Run claude command inside an OpenShell sandbox with dynamic network policy."""
+    import tempfile
+
+    policy_content = _generate_openshell_policy(model)
     sandbox_name = f"security-audit-{name}-{int(time.time())}"
 
-    cmd = [
-        "openshell", "sandbox", "create",
-        "--name", sandbox_name,
-        "--no-keep",
-        "--auto-providers",
-    ]
-    if policy_file.exists():
-        cmd.extend(["--policy", str(policy_file)])
-
-    cmd.append("--")
-    cmd.extend(claude_args)
-
+    # Write dynamic policy to a temp file
+    policy_fd, policy_path = tempfile.mkstemp(suffix=".yaml", prefix="openshell-policy-")
     try:
-        result = run(cmd, check=False, timeout=3600)
-        return result.returncode == 0
-    except subprocess.TimeoutExpired:
-        log(f"  {name} timed out (1h), deleting sandbox", level="WARN")
-        subprocess.run(
-            ["openshell", "sandbox", "delete", sandbox_name],
-            capture_output=True, text=True, timeout=30,
-        )
-        return False
+        with os.fdopen(policy_fd, "w") as f:
+            f.write(policy_content)
+
+        cmd = [
+            "openshell", "sandbox", "create",
+            "--name", sandbox_name,
+            "--no-keep",
+            "--auto-providers",
+            "--policy", policy_path,
+            "--",
+        ]
+        cmd.extend(claude_args)
+
+        try:
+            result = run(cmd, check=False, timeout=3600)
+            return result.returncode == 0
+        except subprocess.TimeoutExpired:
+            log(f"  {name} timed out (1h), deleting sandbox", level="WARN")
+            subprocess.run(
+                ["openshell", "sandbox", "delete", sandbox_name],
+                capture_output=True, text=True, timeout=30,
+            )
+            return False
+    finally:
+        try:
+            os.unlink(policy_path)
+        except OSError:
+            pass
 
 
 def _run_locally(claude_args):
@@ -654,6 +718,7 @@ def main():
             ai_future = pool.submit(
                 step_ai_skills, repo, output_dir, session_file,
                 not args.no_sandbox, args.no_cache, args.arch_context,
+                resolve_model(args.model),
             )
             for name, future in [("SAST", sast_future), ("AI skills", ai_future)]:
                 try:
