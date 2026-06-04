@@ -53,6 +53,34 @@ def detect_harness():
     sys.exit(1)
 
 
+def resolve_model(args_model):
+    """Resolve model from CLI flag, env var, or None (use harness default)."""
+    if args_model:
+        return args_model
+    return os.environ.get("SECURITY_AUDIT_MODEL") or None
+
+
+def _build_ai_command(harness, prompt, model=None):
+    """Build the subprocess command for the detected harness."""
+    if harness == "claude":
+        plugin_dir = Path.home() / ".claude" / "plugins" / "cache"
+        return [
+            "claude",
+            "--add-dir", str(plugin_dir),
+            "-p", prompt,
+            "--allowedTools", "Bash,Read,Write,Grep,Glob,Skill,Agent",
+            "--max-turns", "100",
+        ]
+    elif harness == "opencode":
+        cmd = ["opencode", "run"]
+        if model:
+            cmd.extend(["--model", model])
+        cmd.extend(["--max-turns", "100", prompt])
+        return cmd
+    else:
+        raise ValueError(f"Unknown harness: {harness}")
+
+
 AI_SKILLS = [
     {
         "name": "adversarial-reviewing",
@@ -567,6 +595,8 @@ def main():
     parser.add_argument("--no-sandbox", action="store_true", help="Run AI skills without container isolation")
     parser.add_argument("--no-cache", action="store_true", help="Clear AI skill caches, force fresh review")
     parser.add_argument("--arch-context", help="Path to architecture-analyzer output directory")
+    parser.add_argument("--model", default=None,
+                        help="LLM model (e.g. anthropic/claude-sonnet-4-6, openai/gpt-4o)")
     parser.add_argument("--reports-only", action="store_true", help="Regenerate reports from existing data")
     parser.add_argument("--scan-dir", help="Existing scan directory for --reports-only")
     args = parser.parse_args()
