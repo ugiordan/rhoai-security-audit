@@ -133,7 +133,10 @@ def step_sast_scan(repo, output_dir, branch="main"):
 def _clear_ai_caches():
     """Remove adversarial-review and security-scan caches to force fresh runs."""
     import glob as _glob
+    import tempfile
+    tmpdir = os.environ.get("TMPDIR", tempfile.gettempdir())
     patterns = [
+        os.path.join(tmpdir, "adversarial-review-cache-*"),
         "/tmp/adversarial-review-cache-*",
         str(Path.home() / ".claude/plugins/cache/*/adversarial-reviewing/*/skills/adversarial-reviewing/.adversarial-review-cache/*"),
         ".security-scan/security-scan-*",
@@ -378,7 +381,11 @@ def _collect_ai_output(name, skill_cfg, output_dir):
     if name == "adversarial-reviewing":
         # Find FSM orchestrator output in cache
         import glob
-        caches = glob.glob("/tmp/adversarial-review-cache-*/outputs/*.md")
+        import tempfile
+        tmpdir = os.environ.get("TMPDIR", tempfile.gettempdir())
+        caches = glob.glob(os.path.join(tmpdir, "adversarial-review-cache-*/outputs/*.md"))
+        if not caches:
+            caches = glob.glob("/tmp/adversarial-review-cache-*/outputs/*.md")
         if not caches:
             # Check skill plugin cache
             home = Path.home()
