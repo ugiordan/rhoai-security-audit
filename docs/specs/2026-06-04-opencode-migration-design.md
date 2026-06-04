@@ -116,7 +116,7 @@ PROVIDER_ENDPOINTS = {
     "anthropic": "api.anthropic.com",
     "openai": "api.openai.com",
     "google": "generativelanguage.googleapis.com",
-    "azure": "*.openai.azure.com",
+    "azure": "REQUIRES_EXPLICIT_CONFIG",  # user must set SECURITY_AUDIT_PROVIDER_HOST
 }
 ```
 
@@ -329,7 +329,7 @@ and dispatches agents via whichever tool is available.
 | Jira webhook forgery | Webhook must use shared secret/HMAC validation (infra concern) |
 | GitLab CI open trigger | Restrict trigger tokens, add IP allowlist (infra concern) |
 | $ARGUMENTS injection via LLM | Mitigated by sandbox (no host access) + argparse validation |
-| OpenCode path skips sandboxing | Same sandbox wraps both harness subprocess calls |
+| Azure endpoint wildcard | Azure requires explicit host config (no wildcard allowed) |
 
 ## Success Criteria
 
