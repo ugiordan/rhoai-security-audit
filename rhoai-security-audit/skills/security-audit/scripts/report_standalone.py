@@ -173,7 +173,7 @@ def _parse_ai_md(text, source):
 
     # Format 3: "### N. Title" with **Severity**: HIGH
     if not findings:
-        blocks = re.split(r'\n(?=### \d+\.)', text)
+        blocks = re.split(r'\n(?=#{3,4}\s+\d+\.)', text)
         for i, block in enumerate(blocks):
             heading = re.match(r'### \d+\.\s+(.+?)(?:\n|$)', block)
             if not heading:

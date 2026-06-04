@@ -81,11 +81,11 @@ def _extract_findings(text, source):
             if f:
                 findings.append(f)
 
-    # Try semantic-scan format: "### N. Title" with **Severity**: HIGH
+    # Try semantic-scan format: "### N. Title" or "#### N. Title" with **Severity:** HIGH
     if not findings:
-        blocks = re.split(r'\n(?=### \d+\.)', text)
+        blocks = re.split(r'\n(?=#{3,4}\s+\d+\.)', text)
         for i, block in enumerate(blocks):
-            heading = re.match(r'### \d+\.\s+(.+?)(?:\n|$)', block)
+            heading = re.match(r'#{3,4}\s+\d+\.\s+(.+?)(?:\n|$)', block)
             if not heading:
                 continue
             f = _parse_semantic_block(block, heading.group(1).strip(), source, i + 1)
@@ -188,7 +188,7 @@ def _parse_semantic_block(block, title, source, index):
          "category": "ai-review", "detected_by": [source], "triage": {},
          "title": title, "rule_id": f"SCAN-{index:03d}"}
 
-    sev_match = re.search(r'\*\*Severity\*\*:\s*(\w+)', block, re.IGNORECASE)
+    sev_match = re.search(r'\*\*Severity:\*\*\s*(\w+)', block, re.IGNORECASE)
     if sev_match:
         sev = sev_match.group(1).lower()
         f["severity"] = {"critical": "critical", "high": "high",
@@ -196,7 +196,7 @@ def _parse_semantic_block(block, title, source, index):
     else:
         f["severity"] = "medium"
 
-    file_match = re.search(r'\*\*File\*\*:\s*`?([^`\n]+)`?', block)
+    file_match = re.search(r'\*\*File:\*\*\s*`?([^`\n]+)`?', block)
     if file_match:
         raw = file_match.group(1).strip()
         f["file"] = raw.split(",")[0].split("(")[0].strip()
@@ -209,14 +209,29 @@ def _parse_semantic_block(block, title, source, index):
         f["line_start"] = 0
     f["line_end"] = f["line_start"]
 
-    conf_match = re.search(r'\*\*Confidence\*\*:\s*([\d.]+)', block)
+    conf_match = re.search(r'\*\*Confidence:\*\*\s*([\d.]+)', block)
     f["confidence"] = float(conf_match.group(1)) if conf_match else 0.7
 
-    desc_match = re.search(r'(?:Description|Impact|Details).*?:\s*(.+?)(?=\n\*\*|\n###|\Z)', block, re.DOTALL | re.IGNORECASE)
-    f["description"] = desc_match.group(1).strip()[:500] if desc_match else ""
+    cat_match = re.search(r'\*\*Category:\*\*\s*(.+?)(?:\n|$)', block)
+    if cat_match:
+        f["category"] = cat_match.group(1).strip()
 
-    fix_match = re.search(r'(?:Remediation|Fix|Recommendation).*?:\s*(.+?)(?=\n###|\Z)', block, re.DOTALL | re.IGNORECASE)
-    f["recommendation"] = fix_match.group(1).strip()[:300] if fix_match else ""
+    desc_match = re.search(
+        r'\*\*Issue [Dd]escription\*\*:?\s*\n?(.*?)(?=\n\*\*(?:Data [Ff]low|Exploit|Impact|Remediation|Code|References)|---|\n#{3,4}\s|\Z)',
+        block, re.DOTALL)
+    if not desc_match:
+        desc_match = re.search(r'(?:Description|Impact|Details).*?:\s*(.+?)(?=\n\*\*|\n#{3,4}\s|\Z)', block, re.DOTALL | re.IGNORECASE)
+    f["description"] = desc_match.group(1).strip()[:800] if desc_match else ""
+
+    snippet_match = re.search(r'```[a-z]*\n(.*?)```', block, re.DOTALL)
+    f["snippet"] = snippet_match.group(1).strip()[:500] if snippet_match else ""
+
+    fix_match = re.search(
+        r'\*\*Remediation\*\*:?\s*\n?(.*?)(?=\n\*\*References|\n#{3,4}\s|---|\Z)',
+        block, re.DOTALL | re.IGNORECASE)
+    if not fix_match:
+        fix_match = re.search(r'(?:Fix|Recommendation).*?:\s*(.+?)(?=\n#{3,4}\s|\Z)', block, re.DOTALL | re.IGNORECASE)
+    f["recommendation"] = fix_match.group(1).strip()[:800] if fix_match else ""
 
     return f
 

@@ -249,17 +249,17 @@ def _parse_ai_md(text, source):
             f["triage"] = {}
             findings.append(f)
 
-    # Format 3: "### N. Title" with **Severity**: HIGH
+    # Format 3: "### N. Title" or "#### N. Title" with **Severity:** HIGH
     if not findings:
-        blocks = re.split(r'\n(?=### \d+\.)', text)
+        blocks = re.split(r'\n(?=#{3,4}\s+\d+\.)', text)
         for i, block in enumerate(blocks):
-            heading = re.match(r'### \d+\.\s+(.+?)(?:\n|$)', block)
+            heading = re.match(r'#{3,4}\s+\d+\.\s+(.+?)(?:\n|$)', block)
             if not heading:
                 continue
             f = {"id": f"SCAN-{i+1:03d}", "source": source, "origin": "ai",
                  "category": "ai-review", "detected_by": [source],
                  "title": heading.group(1).strip(), "rule_id": f"SCAN-{i+1:03d}"}
-            sev_match = re.search(r'\*\*Severity\*\*:\s*(\w+)', block, re.IGNORECASE)
+            sev_match = re.search(r'\*\*Severity:\*\*\s*(\w+)', block, re.IGNORECASE)
             sev = sev_match.group(1).lower() if sev_match else "medium"
             f["severity"] = {"critical": "critical", "high": "high",
                              "medium": "medium", "low": "low"}.get(sev, "medium")
@@ -276,15 +276,27 @@ def _parse_ai_md(text, source):
             else:
                 f["line_start"] = 0
             f["line_end"] = f["line_start"]
-            desc_match = re.search(r'(?:Description|Impact|Details).*?:\s*(.+?)(?=\n\*\*|\n###|\Z)',
-                                   block, re.DOTALL | re.IGNORECASE)
+            conf_match = re.search(r'\*\*Confidence:\*\*\s*([\d.]+)', block)
+            f["confidence"] = float(conf_match.group(1)) if conf_match else 0.7
+            cat_match = re.search(r'\*\*Category:\*\*\s*(.+?)(?:\n|$)', block)
+            if cat_match:
+                f["category"] = cat_match.group(1).strip()
+            desc_match = re.search(
+                r'\*\*Issue [Dd]escription\*\*:?\s*\n?(.*?)(?=\n\*\*(?:Data|Exploit|Impact|Remediation|Code|References)|---|\n#{3,4}\s|\Z)',
+                block, re.DOTALL)
+            if not desc_match:
+                desc_match = re.search(r'(?:Description|Impact|Details).*?:\s*(.+?)(?=\n\*\*|\n#{3,4}\s|\Z)',
+                                       block, re.DOTALL | re.IGNORECASE)
             f["description"] = desc_match.group(1).strip()[:800] if desc_match else ""
             snippet_match = re.search(r'```[a-z]*\n(.*?)```', block, re.DOTALL)
             f["snippet"] = snippet_match.group(1).strip()[:500] if snippet_match else ""
-            rec_match = re.search(r'(?:Remediation|Fix|Recommendation).*?:\s*(.+?)(?=\n###|\Z)',
-                                  block, re.DOTALL | re.IGNORECASE)
+            rec_match = re.search(
+                r'\*\*Remediation\*\*:?\s*\n?(.*?)(?=\n\*\*References|\n#{3,4}\s|---|\Z)',
+                block, re.DOTALL | re.IGNORECASE)
+            if not rec_match:
+                rec_match = re.search(r'(?:Fix|Recommendation).*?:\s*(.+?)(?=\n#{3,4}\s|\Z)',
+                                      block, re.DOTALL | re.IGNORECASE)
             f["recommendation"] = rec_match.group(1).strip()[:800] if rec_match else ""
-            f["confidence"] = 0.7
             f["triage"] = {}
             findings.append(f)
 
