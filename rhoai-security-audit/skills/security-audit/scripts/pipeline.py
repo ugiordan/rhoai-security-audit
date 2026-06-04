@@ -329,7 +329,7 @@ def _resolve_arch_context(arch_context, repo, output_dir):
     return None
 
 
-def step_ai_skills(repo, output_dir, session_file, sandbox=True, no_cache=False, arch_context=None, model=None):
+def step_ai_skills(repo, output_dir, session_file, sandbox=True, no_cache=False, arch_context=None, harness="claude", model=None):
     """Step 3: Invoke AI skills with optional architecture context."""
     log("Step 3: AI skills")
     if no_cache:
@@ -351,7 +351,7 @@ def step_ai_skills(repo, output_dir, session_file, sandbox=True, no_cache=False,
         )
 
         start = time.time()
-        success = _invoke_ai_skill(repo, skill_id, name, runtime, sandbox, arch_context, model=model)
+        success = _invoke_ai_skill(repo, skill_id, name, runtime, sandbox, arch_context, harness=harness, model=model)
         duration = time.time() - start
 
         if success:
@@ -401,7 +401,7 @@ def _setup_scanner_workspace(repo):
     return str(workspace)
 
 
-def _invoke_ai_skill(repo, skill_id, name, _runtime, sandbox, arch_context=None, model=None):
+def _invoke_ai_skill(repo, skill_id, name, _runtime, sandbox, arch_context=None, harness="claude", model=None):
     """Run a single AI skill, optionally inside an OpenShell sandbox."""
 
     # Set up workspace for scanner skill (its hooks don't fire in pipeline mode)
@@ -424,26 +424,19 @@ def _invoke_ai_skill(repo, skill_id, name, _runtime, sandbox, arch_context=None,
     if workspace_path:
         prompt += f'\n<workspace>{os.path.abspath(workspace_path)}</workspace>'
 
-    plugin_dir = Path.home() / ".claude" / "plugins" / "cache"
-    claude_args = [
-        "claude",
-        "--add-dir", str(plugin_dir),
-        "-p", prompt,
-        "--allowedTools", "Bash,Read,Write,Grep,Glob,Skill,Agent",
-        "--max-turns", "100",
-    ]
+    ai_cmd = _build_ai_command(harness, prompt, model=model)
 
     if sandbox:
         if _ensure_openshell():
-            return _run_in_openshell(claude_args, name, model=model)
+            return _run_in_openshell(ai_cmd, name, model=model)
         else:
             log(f"  OpenShell not available. Use --no-sandbox to run without isolation.", level="ERROR")
             return False
-    return _run_locally(claude_args)
+    return _run_locally(ai_cmd)
 
 
-def _run_in_openshell(claude_args, name, model=None):
-    """Run claude command inside an OpenShell sandbox with dynamic network policy."""
+def _run_in_openshell(ai_cmd, name, model=None):
+    """Run AI harness command inside an OpenShell sandbox with dynamic network policy."""
     import tempfile
 
     policy_content = _generate_openshell_policy(model)
@@ -463,7 +456,7 @@ def _run_in_openshell(claude_args, name, model=None):
             "--policy", policy_path,
             "--",
         ]
-        cmd.extend(claude_args)
+        cmd.extend(ai_cmd)
 
         try:
             result = run(cmd, check=False, timeout=3600)
@@ -482,10 +475,10 @@ def _run_in_openshell(claude_args, name, model=None):
             pass
 
 
-def _run_locally(claude_args):
-    """Run claude command locally (no sandbox)."""
+def _run_locally(ai_cmd):
+    """Run AI harness command locally (no sandbox)."""
     try:
-        result = run(claude_args, check=False, timeout=3600)
+        result = run(ai_cmd, check=False, timeout=3600)
         return result.returncode == 0
     except subprocess.TimeoutExpired:
         log("  AI skill timed out (1h)", level="WARN")
@@ -671,6 +664,12 @@ def main():
         sys.exit(1)
     repo_short = repo.split("/")[-1]
 
+    harness = detect_harness()
+    model = resolve_model(args.model)
+    log(f"Harness: {harness}")
+    if model:
+        log(f"Model: {model}")
+
     if args.reports_only:
         if args.scan_dir:
             output_dir = args.scan_dir
@@ -718,7 +717,7 @@ def main():
             ai_future = pool.submit(
                 step_ai_skills, repo, output_dir, session_file,
                 not args.no_sandbox, args.no_cache, args.arch_context,
-                resolve_model(args.model),
+                harness, model,
             )
             for name, future in [("SAST", sast_future), ("AI skills", ai_future)]:
                 try:
