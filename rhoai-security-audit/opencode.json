@@ -1,8 +1,8 @@
 {
-  "model": "anthropic/claude-sonnet-4-6",
-  "small_model": "anthropic/claude-haiku-4-5",
+  "model": "google-vertex/claude-sonnet-4-6@default",
+  "small_model": "google-vertex/claude-haiku-4-5@20251001",
   "provider": {
-    "anthropic": {}
+    "google-vertex": {}
   },
   "permission": {
     "bash": "allow",

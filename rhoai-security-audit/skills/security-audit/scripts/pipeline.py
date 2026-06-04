@@ -83,6 +83,7 @@ PROVIDER_ENDPOINTS = {
     "anthropic": "api.anthropic.com",
     "openai": "api.openai.com",
     "google": "generativelanguage.googleapis.com",
+    "google-vertex": "us-east5-aiplatform.googleapis.com",
 }
 
 OPENSHELL_POLICY_TEMPLATE = """version: 1
