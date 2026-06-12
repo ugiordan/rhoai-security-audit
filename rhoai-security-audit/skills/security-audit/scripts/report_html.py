@@ -20,7 +20,11 @@ import subprocess
 from collections import Counter, defaultdict
 from pathlib import Path
 
-_CONTAINER_PATH_RE = re.compile(r"^/tmp/scan-[^/]+/")
+from report_common import (
+    load_findings, load_metadata, shorten_path,
+    github_link_md as github_link, get_triage_status as _get_triage,
+    get_origin as _get_origin,
+)
 
 SEV_ORDER = ["critical", "high", "medium", "low", "info"]
 SEV_EMOJI = {
@@ -32,94 +36,6 @@ SEV_EMOJI = {
 }
 
 
-def _get_triage(f):
-    t = f.get("triage", "sast-only")
-    if isinstance(t, dict):
-        return t.get("status", "sast-only")
-    return t if isinstance(t, str) else "sast-only"
-
-
-def _get_origin(f):
-    o = f.get("origin", "sast")
-    if isinstance(o, dict):
-        return o.get("type", "sast")
-    return o if isinstance(o, str) else "sast"
-
-
-def load_findings(scan_dir):
-    p = Path(scan_dir)
-    for name in ["triaged-findings.json", "deduplicated-findings.json", "normalized-findings.json"]:
-        f = p / name
-        if f.exists():
-            return json.loads(f.read_text())
-    return []
-
-
-def load_metadata(scan_dir):
-    p = Path(scan_dir)
-    meta = {}
-    f = p / "scan-metadata.json"
-    if f.exists():
-        meta = json.loads(f.read_text())
-    ss = p / "raw" / "security-summary.json"
-    if ss.exists() and not meta.get("repo"):
-        try:
-            summary = json.loads(ss.read_text())
-            meta.setdefault("repo", summary.get("repo", ""))
-            meta.setdefault("date", summary.get("scan_date", ""))
-            meta.setdefault("findings", summary.get("findings", {}))
-        except Exception:
-            pass
-    ci = p / "raw" / "commit-info.json"
-    if ci.exists():
-        try:
-            info = json.loads(ci.read_text())
-            if not meta.get("branch"):
-                meta["branch"] = info.get("default_branch", "main")
-            if not meta.get("commit"):
-                meta["commit"] = info.get("commit_sha", "")
-        except Exception:
-            pass
-    if not meta.get("repo"):
-        parts = Path(scan_dir).resolve().parts
-        for i, part in enumerate(parts):
-            if part == "output" and i + 1 < len(parts):
-                meta["repo"] = f"opendatahub-io/{parts[i + 1]}"
-                break
-    if not meta.get("date"):
-        for part in Path(scan_dir).resolve().parts:
-            if len(part) == 10 and part[4] == "-" and part[7] == "-":
-                meta["date"] = part
-                break
-    return meta
-
-
-def shorten_path(filepath, repo_name=""):
-    filepath = filepath.replace("\\", "/")
-    filepath = _CONTAINER_PATH_RE.sub("", filepath)
-    filepath = filepath.lstrip("/")
-    parts = filepath.split("/")
-    if repo_name:
-        short = repo_name.split("/")[-1] if "/" in repo_name else repo_name
-        if parts and parts[0] == short:
-            return "/".join(parts[1:])
-        if parts and parts[0] == f"scan-{short}":
-            return "/".join(parts[1:])
-    for i, p in enumerate(parts):
-        if p in ("repo", "repos"):
-            return "/".join(parts[i + 1:]) if i + 1 < len(parts) else filepath
-    return filepath
-
-
-def github_link(filepath, repo_full, branch="main", line=None):
-    clean = shorten_path(filepath, repo_full)
-    if not clean or not repo_full:
-        return f"`{clean}:{line}`" if line else f"`{clean}`"
-    url = f"https://github.com/{repo_full}/blob/{branch}/{clean}"
-    if line and str(line).isdigit() and int(line) > 0:
-        url += f"#L{line}"
-    display = f"{clean}:{line}" if line else clean
-    return f"[`{display}`]({url})"
 
 
 def generate_mkdocs_yml(docs_dir, metadata, repo_full, multi=False):
@@ -589,6 +505,16 @@ def _finding_block(f, repo_full, branch):
     elif origin == "ai":
         triage_row = "    | **Triage** | :material-brain: **AI-only** (found by AI review only) |\n"
 
+    confidence_row = ""
+    if origin == "ai":
+        conf_val = float(f.get("confidence", 0))
+        if conf_val >= 0.8:
+            confidence_row = "    | **Confidence** | :material-shield-check: **HIGH** (code-verified, multi-agent confirmed) |\n"
+        elif conf_val >= 0.6:
+            confidence_row = "    | **Confidence** | :material-shield-alert: **MEDIUM** (plausible, not fully verified) |\n"
+        else:
+            confidence_row = "    | **Confidence** | :material-shield-off: **LOW** (speculative or challenged) |\n"
+
     md = f'!!! {admon_type} "{title}"\n'
     md += f"\n"
     md += f"    | | |\n"
@@ -597,6 +523,7 @@ def _finding_block(f, repo_full, branch):
     md += f"    | **Source** | {source} |\n"
     md += f"    | **File** | {file_link} |\n"
     md += triage_row
+    md += confidence_row
     md += f"\n"
 
     prose, impact, evidence, desc_rem = _split_description(desc)

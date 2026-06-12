@@ -7,7 +7,7 @@ spec:
   output:
     to:
       kind: DockerImage
-      name: quay.io/ugiordan/security-audit-scanner:latest
+      name: quay.io/ugiordan/security-audit-scanner:v1.0.0
     pushSecret:
       name: quay-push-secret
   source:

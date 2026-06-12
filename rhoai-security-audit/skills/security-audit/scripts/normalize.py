@@ -9,7 +9,7 @@ from pathlib import Path
 SEVERITY_MAP = {
     "CRITICAL": "critical", "critical": "critical", "ERROR": "critical",
     "HIGH": "high", "high": "high", "WARNING": "high",
-    "MEDIUM": "medium", "medium": "medium", "INFO": "medium",
+    "MEDIUM": "medium", "medium": "medium", "INFO": "info",
     "LOW": "low", "low": "low",
     "NOTE": "info", "info": "info", "style": "info", "warning": "high", "error": "critical",
 }
@@ -157,8 +157,11 @@ def _fix_cicd_path(filepath, tool):
 def parse_sarif(path, tool):
     data = json.loads(path.read_text())
     findings = []
+    counter = 0
     for run in data.get("runs", []):
-        for i, r in enumerate(run.get("results", []), 1):
+        for r in run.get("results", []):
+            counter += 1
+            i = counter
             loc = r.get("locations", [{}])[0].get("physicalLocation", {})
             region = loc.get("region", {})
             findings.append({
@@ -215,7 +218,14 @@ def parse_gosec(path):
 
 
 def parse_trufflehog(path):
-    data = json.loads(path.read_text())
+    raw = path.read_text().strip()
+    if not raw:
+        return []
+    # Handle NDJSON (one JSON object per line) and JSON array
+    if raw.startswith('['):
+        data = json.loads(raw)
+    else:
+        data = [json.loads(line) for line in raw.split(chr(10)) if line.strip()]
     if not isinstance(data, list):
         return []
     findings = []
@@ -321,6 +331,35 @@ def parse_osv_scanner(path):
     return findings
 
 
+def parse_actionlint_txt(path):
+    """Parse actionlint plain text output: file:line:col: message [rule]"""
+    import re
+    findings = []
+    text = Path(path).read_text()
+    for line in text.strip().split("\n"):
+        if not line.strip() or "No workflows directory" in line:
+            continue
+        m = re.match(r'(.+?):(\d+):(\d+):\s+(.+?)(?:\s+\[(.+)\])?\s*$', line)
+        if m:
+            findings.append({
+                "id": make_id("actionlint", len(findings) + 1),
+                "title": m.group(4).strip(),
+                "description": m.group(4).strip(),
+                "file": _fix_cicd_path(m.group(1).strip(), "actionlint"),
+                "line_start": int(m.group(2)),
+                "line_end": int(m.group(2)),
+                "severity": "medium",
+                "category": "cicd",
+                "rule_id": _clean_rule_id(m.group(5) or "actionlint"),
+                "source": "actionlint",
+                "detected_by": ["actionlint"],
+                "confidence": 0.7,
+                "snippet": "",
+                "recommendation": "",
+            })
+    return findings
+
+
 PARSERS = {
     "semgrep.json": ("semgrep", parse_semgrep),
     "gitleaks-report.json": ("gitleaks", parse_gitleaks),
@@ -330,6 +369,8 @@ PARSERS = {
     "kube-linter.json": ("kube-linter", parse_kube_linter),
     "hadolint.sarif": ("hadolint", lambda p: parse_sarif(p, "hadolint")),
     "zizmor.sarif": ("zizmor", lambda p: parse_sarif(p, "zizmor")),
+    "actionlint.sarif": ("actionlint", lambda p: parse_sarif(p, "actionlint")),
+    "actionlint.txt": ("actionlint", parse_actionlint_txt),
     "shellcheck-report.json": ("shellcheck", parse_shellcheck),
     "gosec-report.json": ("gosec", parse_gosec),
     "govulncheck-report.json": ("govulncheck", parse_govulncheck),
@@ -359,7 +400,7 @@ def _clean_file_path(filepath, repo_name=""):
             # No repos/ found, strip everything up to a known project marker
             for i, p in enumerate(parts):
                 if p in ("cmd", "pkg", "internal", "api", "charts", ".github",
-                         "scripts", "Dockerfile", "go.mod", "kagenti-operator"):
+                         "scripts", "Dockerfile", "go.mod"):
                     filepath = "/".join(parts[i:])
                     break
             else:

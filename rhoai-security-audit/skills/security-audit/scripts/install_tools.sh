@@ -29,13 +29,28 @@ BIN="${TOOLS_DIR}/bin"
 INSTALLED=0
 SKIPPED=0
 
-_install() {
+_needs_install() {
   local name="$1"
   if [ -f "${BIN}/${name}" ] && [ -x "${BIN}/${name}" ]; then
     SKIPPED=$((SKIPPED + 1))
+    echo "no"
     return 0
   fi
-  INSTALLED=$((INSTALLED + 1))
+  echo "yes"
+  return 0
+}
+
+_verify_checksum() {
+  local file="$1" expected="$2"
+  if [ -z "${expected}" ]; then return 0; fi
+  local actual
+  actual=$(shasum -a 256 "${file}" 2>/dev/null | awk '{print $1}')
+  if [ "${actual}" != "${expected}" ]; then
+    echo "  CHECKSUM MISMATCH for ${file}: expected ${expected}, got ${actual}" >&2
+    rm -f "${file}"
+    return 1
+  fi
+  return 0
 }
 
 echo "Installing SAST tools to ${TOOLS_DIR}..."
@@ -51,8 +66,7 @@ else
 fi
 
 # --- gitleaks ---
-_install gitleaks
-if [ $? -eq 0 ] && [ ! -f "${BIN}/gitleaks" ]; then
+if [ ! -f "${BIN}/gitleaks" ]; then
   GITLEAKS_VERSION="8.30.0"
   curl -sSfL -o /tmp/gitleaks.tar.gz \
     "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_${OS}_${ARCH_ALT}.tar.gz"
@@ -60,7 +74,6 @@ if [ $? -eq 0 ] && [ ! -f "${BIN}/gitleaks" ]; then
 fi
 
 # --- trufflehog ---
-_install trufflehog
 if [ ! -f "${BIN}/trufflehog" ]; then
   TRUFFLEHOG_VERSION="3.92.3"
   curl -sSfL -o /tmp/trufflehog.tar.gz \
@@ -69,7 +82,6 @@ if [ ! -f "${BIN}/trufflehog" ]; then
 fi
 
 # --- shellcheck ---
-_install shellcheck
 if [ ! -f "${BIN}/shellcheck" ]; then
   SHELLCHECK_VERSION="0.10.0"
   if [ "${OS}" = "darwin" ]; then
@@ -83,7 +95,6 @@ if [ ! -f "${BIN}/shellcheck" ]; then
 fi
 
 # --- hadolint ---
-_install hadolint
 if [ ! -f "${BIN}/hadolint" ]; then
   HADOLINT_VERSION="2.14.0"
   case "${OS}" in
@@ -100,7 +111,6 @@ if [ ! -f "${BIN}/hadolint" ]; then
 fi
 
 # --- trivy ---
-_install trivy
 if [ ! -f "${BIN}/trivy" ]; then
   TRIVY_VERSION="0.70.0"
   curl -sSfL -o /tmp/trivy.tar.gz \
@@ -108,14 +118,15 @@ if [ ! -f "${BIN}/trivy" ]; then
   tar -xzf /tmp/trivy.tar.gz -C "${BIN}" trivy && rm /tmp/trivy.tar.gz
 fi
 
-# --- grype ---
-_install grype
+# --- grype (pinned, no curl|sh) ---
 if [ ! -f "${BIN}/grype" ]; then
-  curl -sSfL https://raw.githubusercontent.com/anchore/grype/main/install.sh | sh -s -- -b "${BIN}"
+  GRYPE_VERSION="0.112.0"
+  curl -sSfL -o /tmp/grype.tar.gz \
+    "https://github.com/anchore/grype/releases/download/v${GRYPE_VERSION}/grype_${GRYPE_VERSION}_${OS}_${ARCH_GO}.tar.gz"
+  tar -xzf /tmp/grype.tar.gz -C "${BIN}" grype && rm /tmp/grype.tar.gz
 fi
 
 # --- kube-linter ---
-_install kube-linter
 if [ ! -f "${BIN}/kube-linter" ]; then
   KUBELINTER_VERSION="0.8.3"
   if [ "${OS}" = "darwin" ]; then KL_SUFFIX="${OS}"; else KL_SUFFIX="linux"; fi
@@ -125,7 +136,6 @@ if [ ! -f "${BIN}/kube-linter" ]; then
 fi
 
 # --- actionlint ---
-_install actionlint
 if [ ! -f "${BIN}/actionlint" ]; then
   ACTIONLINT_VERSION="1.7.8"
   curl -sSfL -o /tmp/al.tar.gz \
@@ -133,11 +143,11 @@ if [ ! -f "${BIN}/actionlint" ]; then
   tar -xzf /tmp/al.tar.gz -C "${BIN}" actionlint && rm /tmp/al.tar.gz
 fi
 
-# --- osv-scanner ---
-_install osv-scanner
+# --- osv-scanner (pinned version) ---
 if [ ! -f "${BIN}/osv-scanner" ]; then
+  OSV_VERSION="2.3.8"
   curl -sSfL -o "${BIN}/osv-scanner" \
-    "https://github.com/google/osv-scanner/releases/latest/download/osv-scanner_${OS}_${ARCH_GO}"
+    "https://github.com/google/osv-scanner/releases/download/v${OSV_VERSION}/osv-scanner_${OS}_${ARCH_GO}"
   chmod +x "${BIN}/osv-scanner"
 fi
 

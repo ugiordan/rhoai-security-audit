@@ -6,6 +6,12 @@ set -euo pipefail
 REPO="${1:?Usage: run_all.sh <org/repo> <branch> <results-dir>}"
 BRANCH="${2:-main}"
 RESULTS_DIR="${3:-/results}"
+
+if [[ ! "${REPO}" =~ ^[a-zA-Z0-9._-]+/[a-zA-Z0-9._-]+$ ]]; then
+  echo "ERROR: Invalid repo format: ${REPO}. Expected org/repo." >&2
+  exit 1
+fi
+
 REPO_SHORT="${REPO##*/}"
 WORKDIR="/tmp/scan-${REPO_SHORT}"
 
@@ -19,7 +25,7 @@ rm -rf "${WORKDIR}"
 if ! git clone --depth 1 --branch "${BRANCH}" "https://github.com/${REPO}.git" "${WORKDIR}" 2>/dev/null; then
   # Branch might not exist, try without --branch
   git clone --depth 1 "https://github.com/${REPO}.git" "${WORKDIR}" 2>/dev/null || {
-    echo '{"error":"clone failed"}' > "${RESULTS_DIR}/scan-summary.json"
+    echo '{"error":"clone failed"}' > "${RESULTS_DIR}/security-summary.json"
     exit 1
   }
 fi
@@ -32,12 +38,16 @@ TOOL_COUNTS_LOG=""
 run_tool() {
   local name="$1" cmd="$2" output="$3" empty_default="${4:-}"
   echo "--- ${name} ---"
-  TIMEOUT_CMD="timeout"
-  command -v timeout &>/dev/null || TIMEOUT_CMD="gtimeout"
-  command -v $TIMEOUT_CMD &>/dev/null || TIMEOUT_CMD=""
-  if eval "${TIMEOUT_CMD:+$TIMEOUT_CMD 600} ${cmd}" 2>/dev/null; then
+  local timeout_prefix=""
+  if command -v timeout &>/dev/null; then
+    timeout_prefix="timeout 600"
+  elif command -v gtimeout &>/dev/null; then
+    timeout_prefix="gtimeout 600"
+  fi
+  if ${timeout_prefix} bash -c "${cmd}" 2>"${RESULTS_DIR}/${name}-stderr.log"; then
     TOOLS_RAN+=("${name}")
   else
+    TOOLS_FAILED+=("${name}")
     TOOLS_RAN+=("${name}")
     if [ -n "${empty_default}" ] && { [ ! -f "${output}" ] || [ ! -s "${output}" ]; }; then
       echo "${empty_default}" > "${output}"
@@ -87,7 +97,7 @@ run_tool "trufflehog" \
 SHELL_FILES=$(find "${WORKDIR}" -name '*.sh' -type f -not -path '*/vendor/*' -not -path '*/.git/*' 2>/dev/null || true)
 if [ -n "${SHELL_FILES}" ]; then
   run_tool "shellcheck" \
-    "echo '${SHELL_FILES}' | tr ' ' '\n' | xargs shellcheck -f json > '${RESULTS_DIR}/shellcheck-report.json'" \
+    "find '${WORKDIR}' -name '*.sh' -type f -not -path '*/vendor/*' -not -path '*/.git/*' -print0 | xargs -0 shellcheck -f json > '${RESULTS_DIR}/shellcheck-report.json'" \
     "${RESULTS_DIR}/shellcheck-report.json" \
     '[]'
 else
@@ -100,7 +110,7 @@ fi
 DOCKERFILES=$(find "${WORKDIR}" \( -name 'Dockerfile*' -o -name 'Containerfile*' \) -type f -not -path '*/.git/*' 2>/dev/null || true)
 if [ -n "${DOCKERFILES}" ]; then
   run_tool "hadolint" \
-    "echo '${DOCKERFILES}' | tr ' ' '\n' | xargs hadolint -f sarif > '${RESULTS_DIR}/hadolint.sarif'" \
+    "find '${WORKDIR}' \\( -name 'Dockerfile*' -o -name 'Containerfile*' \\) -type f -not -path '*/.git/*' -print0 | xargs -0 hadolint -f sarif > '${RESULTS_DIR}/hadolint.sarif'" \
     "${RESULTS_DIR}/hadolint.sarif" \
     '{"runs":[]}'
 else
@@ -210,7 +220,7 @@ data = {
     'tools_ran': $(printf '%s\n' "${TOOLS_RAN[@]}" | python3 -c "import sys,json; print(json.dumps([l.strip() for l in sys.stdin if l.strip()]))"),
     'duration_s': ${DURATION},
 }
-json.dump(data, open('${RESULTS_DIR}/scan-summary.json', 'w'), indent=2)
+json.dump(data, open('${RESULTS_DIR}/security-summary.json', 'w'), indent=2)
 "
 
 echo "=== Done: ${#TOOLS_RAN[@]} tools in ${DURATION}s ==="

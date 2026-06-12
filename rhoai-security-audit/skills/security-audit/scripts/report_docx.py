@@ -41,63 +41,14 @@ BODY_FONT = "Red Hat Text"
 MONO_FONT = "Red Hat Mono"
 
 
-def load_findings(scan_dir):
-    p = Path(scan_dir)
-    triaged = p / "triaged-findings.json"
-    if triaged.exists():
-        return json.loads(triaged.read_text())
-    for name in ["deduplicated-findings.json", "normalized-findings.json"]:
-        f = p / name
-        if f.exists():
-            return json.loads(f.read_text())
-    return []
-
-
-def load_metadata(scan_dir):
-    p = Path(scan_dir)
-    meta = {}
-    f = p / "scan-metadata.json"
-    if f.exists():
-        meta = json.loads(f.read_text())
-    ss = p / "raw" / "security-summary.json"
-    if ss.exists() and not meta.get("repo"):
-        try:
-            summary = json.loads(ss.read_text())
-            meta.setdefault("repo", summary.get("repo", ""))
-            meta.setdefault("date", summary.get("scan_date", ""))
-            meta.setdefault("findings", summary.get("findings", {}))
-        except Exception:
-            pass
-    ci = p / "raw" / "commit-info.json"
-    if ci.exists():
-        try:
-            info = json.loads(ci.read_text())
-            if not meta.get("branch"):
-                meta["branch"] = info.get("default_branch", "main")
-            if not meta.get("commit"):
-                meta["commit"] = info.get("commit_sha", "")
-        except Exception:
-            pass
-    if not meta.get("repo"):
-        parts = Path(scan_dir).resolve().parts
-        for i, part in enumerate(parts):
-            if part == "output" and i + 1 < len(parts):
-                meta["repo"] = f"opendatahub-io/{parts[i + 1]}"
-                break
-    if not meta.get("date"):
-        parts = Path(scan_dir).resolve().parts
-        for part in parts:
-            if len(part) == 10 and part[4] == "-" and part[7] == "-":
-                meta["date"] = part
-                break
-    return meta
+from report_common import load_findings, load_metadata
 
 
 def _file_display(filepath, line_start):
     parts = filepath.replace("\\", "/").split("/")
     for i, p in enumerate(parts):
         if p in ("repo", "repos"):
-            filepath = "/".join(parts[i + 2:]) if i + 2 <= len(parts) else filepath
+            filepath = "/".join(parts[i + 2:]) if i + 2 < len(parts) else filepath
             break
     return f"{filepath}:{line_start}" if line_start else filepath
 
@@ -109,7 +60,7 @@ def _github_url(filepath, line_start, line_end, repo_full, ref):
     parts = filepath.replace("\\", "/").split("/")
     for i, p in enumerate(parts):
         if p in ("repo", "repos"):
-            url_path = "/".join(parts[i + 2:]) if i + 2 <= len(parts) else filepath
+            url_path = "/".join(parts[i + 2:]) if i + 2 < len(parts) else filepath
             break
     frag = f"#L{line_start}" if line_start else ""
     if line_end and line_end != line_start and line_start:
@@ -343,7 +294,7 @@ def _add_findings_table(doc, findings, repo_full, branch_ref, commit_ref):
     for f in sorted_findings[:50]:
         row = table.add_row()
         sev = f.get("severity", "info")
-        triage = f.get("triage", {}).get("status", "")
+        triage = f.get("triage", {}).get("status", "") if isinstance(f.get("triage"), dict) else ""
         triage_label = {"corroborated": " [CORR]", "ai-only": " [AI]"}.get(triage, "")
 
         # Severity cell
@@ -466,6 +417,10 @@ def _add_finding_detail(doc, f, index, repo_full, branch_ref, commit_ref):
         meta_parts.append(f"Rule: {rule_id}")
     if category:
         meta_parts.append(f"Category: {category}")
+    if f.get("origin") == "ai":
+        conf_val = float(f.get("confidence", 0))
+        conf_label = "HIGH" if conf_val >= 0.8 else "MEDIUM" if conf_val >= 0.6 else "LOW"
+        meta_parts.append(f"Confidence: {conf_label}")
     if meta_parts:
         _add_body(doc, " | ".join(meta_parts), color=RH_GREY)
 

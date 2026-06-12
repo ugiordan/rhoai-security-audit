@@ -19,6 +19,8 @@ from collections import Counter, defaultdict
 from html import escape
 from pathlib import Path
 
+from report_common import load_findings, load_metadata, parse_ai_findings as load_ai_findings
+
 SEV_COLORS = {
     "critical": "#dc3545", "high": "#fd7e14", "medium": "#ffc107",
     "low": "#17a2b8", "info": "#6c757d",
@@ -45,171 +47,6 @@ CAT_LABELS = {
 }
 
 
-def load_findings(scan_dir):
-    p = Path(scan_dir)
-    triaged = p / "triaged-findings.json"
-    if triaged.exists():
-        return json.loads(triaged.read_text())
-    for name in ["deduplicated-findings.json", "normalized-findings.json"]:
-        f = p / name
-        if f.exists():
-            return json.loads(f.read_text())
-    return []
-
-
-def load_metadata(scan_dir):
-    p = Path(scan_dir)
-    meta = {}
-    f = p / "scan-metadata.json"
-    if f.exists():
-        meta = json.loads(f.read_text())
-    ci = p / "raw" / "commit-info.json"
-    if ci.exists():
-        try:
-            info = json.loads(ci.read_text())
-            if not meta.get("branch"):
-                meta["branch"] = info.get("default_branch", "main")
-            if not meta.get("commit"):
-                meta["commit"] = info.get("commit_sha", "")
-        except Exception:
-            pass
-    if not meta.get("repo"):
-        parts = Path(scan_dir).resolve().parts
-        for i, part in enumerate(parts):
-            if part == "output" and i + 1 < len(parts):
-                meta["repo"] = f"opendatahub-io/{parts[i + 1]}"
-                break
-    return meta
-
-
-def load_ai_findings(scan_dir):
-    import re
-    p = Path(scan_dir)
-    ai_findings = []
-    for subdir in ["raw/adversarial-reviewing", "raw/adversarial-review", "raw/semantic-scan"]:
-        d = p / subdir
-        if not d.exists():
-            continue
-        source = "adversarial-review" if "adversarial" in subdir else "semantic-scan"
-        for md_file in sorted(d.glob("*.md")):
-            if md_file.name.startswith("."):
-                continue
-            text = md_file.read_text()
-            parsed = _parse_ai_md(text, source)
-            ai_findings.extend(parsed)
-    return ai_findings
-
-
-def _parse_ai_md(text, source):
-    import re
-    findings = []
-
-    # Format 1: "Finding ID: SEC-001" or "### SEC-001"
-    blocks = re.split(r'\n(?=(?:Finding ID:|###?\s+(?:SEC|PERF|QUAL|CORR|ARCH|FINDING)-\d+))', text)
-    for block in blocks:
-        id_match = re.search(r'(?:Finding ID:\s*|###?\s+)((?:SEC|PERF|QUAL|CORR|ARCH|FINDING)-\d+)', block)
-        if not id_match:
-            continue
-        f = {"id": id_match.group(1), "source": source, "origin": "ai",
-             "category": "ai-review", "detected_by": [source]}
-        sev_match = re.search(r'Severity:\s*(\w+)', block, re.IGNORECASE)
-        sev = sev_match.group(1).lower() if sev_match else "medium"
-        f["severity"] = {"critical": "critical", "important": "high", "high": "high",
-                         "medium": "medium", "minor": "low"}.get(sev, "medium")
-        title_match = re.search(r'Title:\s*(.+?)(?:\n|$)', block)
-        f["title"] = title_match.group(1).strip() if title_match else f["id"]
-        file_match = re.search(r'File:\s*`?([^\n`]+)`?', block)
-        f["file"] = file_match.group(1).strip() if file_match else ""
-        line_match = re.search(r'Lines?:\s*(\d+)', block)
-        f["line_start"] = int(line_match.group(1)) if line_match else 0
-        f["line_end"] = f["line_start"]
-        evidence_match = re.search(r'Evidence:\s*(.+?)(?=\n(?:Impact|Recommended|Finding ID:|\Z))', block, re.DOTALL)
-        f["description"] = evidence_match.group(1).strip()[:500] if evidence_match else ""
-        fix_match = re.search(r'Recommended fix:\s*(.+?)(?=\n(?:Finding ID:|\Z))', block, re.DOTALL)
-        f["recommendation"] = fix_match.group(1).strip()[:300] if fix_match else ""
-        snippet_match = re.search(r'```[a-z]*\n(.*?)```', block, re.DOTALL)
-        f["snippet"] = snippet_match.group(1).strip()[:500] if snippet_match else ""
-        f["triage"] = {}
-        findings.append(f)
-
-    # Format 2: "## [CRITICAL] Title" or "### [HIGH] Title"
-    if not findings:
-        blocks = re.split(r'\n(?=##[#]?\s+\[(?:CRITICAL|HIGH|MEDIUM|LOW|INFO)\])', text)
-        for i, block in enumerate(blocks):
-            heading = re.match(r'##[#]?\s+\[(CRITICAL|HIGH|MEDIUM|LOW|INFO)\]\s+(.+?)(?:\n|$)', block)
-            if not heading:
-                continue
-            sev = heading.group(1).lower()
-            title = heading.group(2).strip()
-            prefix = "SEC" if source == "adversarial-review" else "SCAN"
-            fid = f"{prefix}-{i+1:03d}"
-            f = {"id": fid, "source": source, "origin": "ai", "category": "ai-review",
-                 "detected_by": [source], "title": title, "severity": sev, "rule_id": fid}
-            loc_match = re.search(r'(?:- )?\*\*Location\*\*:\s*`?([^`\n]+)`?', block)
-            if loc_match:
-                raw = loc_match.group(1).strip().split(",")[0].split("(")[0].strip()
-                f["file"] = raw
-            else:
-                f["file"] = ""
-            line_match = re.search(r':(\d+)', f.get("file", ""))
-            if line_match:
-                f["line_start"] = int(line_match.group(1))
-                f["file"] = f["file"].split(":")[0]
-            else:
-                f["line_start"] = 0
-            f["line_end"] = f["line_start"]
-            desc_match = re.search(
-                r'\*\*Description\*\*:?\s*\n?(.*?)(?=\n\*\*(?:Impact|Evidence|Recommendation|Data Flow)|---|\Z)',
-                block, re.DOTALL | re.IGNORECASE)
-            f["description"] = desc_match.group(1).strip()[:500] if desc_match else ""
-            snippet_match = re.search(r'```[a-z]*\n(.*?)```', block, re.DOTALL)
-            f["snippet"] = snippet_match.group(1).strip()[:500] if snippet_match else ""
-            rec_match = re.search(
-                r'\*\*Recommendation\*\*:?\s*\n?(.*?)(?=\n---|\n##|\Z)',
-                block, re.DOTALL | re.IGNORECASE)
-            f["recommendation"] = rec_match.group(1).strip()[:300] if rec_match else ""
-            f["triage"] = {}
-            findings.append(f)
-
-    # Format 3: "### N. Title" with **Severity**: HIGH
-    if not findings:
-        blocks = re.split(r'\n(?=### \d+\.)', text)
-        for i, block in enumerate(blocks):
-            heading = re.match(r'### \d+\.\s+(.+?)(?:\n|$)', block)
-            if not heading:
-                continue
-            f = {"id": f"SCAN-{i+1:03d}", "source": source, "origin": "ai",
-                 "category": "ai-review", "detected_by": [source],
-                 "title": heading.group(1).strip(), "rule_id": f"SCAN-{i+1:03d}"}
-            sev_match = re.search(r'\*\*Severity\*\*:\s*(\w+)', block, re.IGNORECASE)
-            sev = sev_match.group(1).lower() if sev_match else "medium"
-            f["severity"] = {"critical": "critical", "high": "high",
-                             "medium": "medium", "low": "low"}.get(sev, "medium")
-            file_match = re.search(r'\*\*(?:File|Location)\*\*:\s*`?([^`\n]+)`?', block)
-            if file_match:
-                raw = file_match.group(1).strip().split(",")[0].split("(")[0].strip()
-                f["file"] = raw
-            else:
-                f["file"] = ""
-            line_match = re.search(r':(\d+)', f.get("file", ""))
-            if line_match:
-                f["line_start"] = int(line_match.group(1))
-                f["file"] = f["file"].split(":")[0]
-            else:
-                f["line_start"] = 0
-            f["line_end"] = f["line_start"]
-            desc_match = re.search(r'(?:Description|Impact|Details).*?:\s*(.+?)(?=\n\*\*|\n###|\Z)',
-                                   block, re.DOTALL | re.IGNORECASE)
-            f["description"] = desc_match.group(1).strip()[:500] if desc_match else ""
-            snippet_match = re.search(r'```[a-z]*\n(.*?)```', block, re.DOTALL)
-            f["snippet"] = snippet_match.group(1).strip()[:500] if snippet_match else ""
-            rec_match = re.search(r'(?:Remediation|Fix|Recommendation).*?:\s*(.+?)(?=\n###|\Z)',
-                                  block, re.DOTALL | re.IGNORECASE)
-            f["recommendation"] = rec_match.group(1).strip()[:300] if rec_match else ""
-            f["triage"] = {}
-            findings.append(f)
-
-    return findings
 
 
 def _github_url(filepath, line_start, line_end, repo_full, ref):
@@ -219,7 +56,7 @@ def _github_url(filepath, line_start, line_end, repo_full, ref):
     parts = filepath.replace("\\", "/").split("/")
     for i, p in enumerate(parts):
         if p in ("repo", "repos"):
-            url_path = "/".join(parts[i + 2:]) if i + 2 <= len(parts) else filepath
+            url_path = "/".join(parts[i + 2:]) if i + 2 < len(parts) else filepath
             break
     frag = f"#L{line_start}" if line_start else ""
     if line_end and line_end != line_start and line_start:
@@ -232,7 +69,7 @@ def _file_display(filepath, line_start):
     parts = filepath.replace("\\", "/").split("/")
     for i, p in enumerate(parts):
         if p in ("repo", "repos"):
-            url_path = "/".join(parts[i + 2:]) if i + 2 <= len(parts) else filepath
+            url_path = "/".join(parts[i + 2:]) if i + 2 < len(parts) else filepath
             break
     return f"{url_path}:{line_start}" if line_start else url_path
 
@@ -260,11 +97,23 @@ def _render_card(f, repo_full, branch_ref, commit_ref):
         raw_desc = parts[0].strip()
         rec = parts[1].strip()
 
-    desc = escape(raw_desc[:300])
-    rec = escape(rec[:300])
+    desc = escape(raw_desc[:800])
+    rec = escape(rec[:800])
 
     triage_badge = TRIAGE_BADGES.get(triage_status, "")
-    sev_badge = f'<span class="chip" style="background:{color};color:#fff">{sev.upper()}</span>{triage_badge}'
+
+    confidence = f.get("confidence", 0)
+    conf_badge = ""
+    if f.get("origin") == "ai" and confidence:
+        conf_val = float(confidence)
+        if conf_val >= 0.8:
+            conf_badge = '<span class="chip" style="background:#166534;font-size:9px" title="Code-verified, multi-agent confirmed">HIGH conf</span>'
+        elif conf_val >= 0.6:
+            conf_badge = '<span class="chip" style="background:#854d0e;font-size:9px" title="Plausible but not fully verified">MED conf</span>'
+        else:
+            conf_badge = '<span class="chip" style="background:#991b1b;font-size:9px" title="Speculative or challenged">LOW conf</span>'
+
+    sev_badge = f'<span class="chip" style="background:{color};color:#fff">{sev.upper()}</span>{triage_badge}{conf_badge}'
 
     src_badge = ""
     if source:
@@ -272,7 +121,7 @@ def _render_card(f, repo_full, branch_ref, commit_ref):
         src_text_color = "#fff" if src_color != "#30363d" else "#8b949e"
         src_badge = f'<span class="chip" style="background:{src_color};color:{src_text_color}">{escape(source)}</span>'
 
-    file_link = f'<a href="{url}" class="file-link" target="_blank">{escape(display)} ↗</a>' if url else f'<code>{escape(display)}</code>'
+    file_link = f'<a href="{escape(url) if url else ""}" class="file-link" target="_blank">{escape(display)} ↗</a>' if url else f'<code>{escape(display)}</code>'
 
     snippet_html = ""
     if snippet:
@@ -289,7 +138,7 @@ def _render_card(f, repo_full, branch_ref, commit_ref):
         </div>
         <div class="card-toggle" onclick="var e=document.getElementById('{expand_id}');e.style.display=e.style.display==='none'?'block':'none';this.textContent=e.style.display==='none'?'Show fix ▾':'Hide fix ▴'">Show fix ▾</div>'''
 
-    return f'''<div class="finding-card" data-severity="{sev}" data-source="{escape(source)}" data-triage="{triage_status}" data-origin="{f.get('origin','sast')}" style="border-left-color:{color}">
+    return f'''<div class="finding-card" data-severity="{escape(sev)}" data-source="{escape(source)}" data-triage="{escape(triage_status)}" data-origin="{escape(f.get('origin','sast'))}" style="border-left-color:{color}">
     <div class="card-header">
         {sev_badge}
         <span class="card-title">{title_text}</span>
@@ -334,7 +183,7 @@ def generate_html(scan_dirs):
 
     sev_counts = Counter(f["severity"] for f in all_findings)
     source_counts = Counter(f.get("source", "unknown") for f in all_findings)
-    triage_counts = Counter(f.get("triage", {}).get("status", "sast-only") for f in all_findings)
+    triage_counts = Counter((f.get("triage", {}).get("status", "sast-only") if isinstance(f.get("triage"), dict) else "sast-only") for f in all_findings)
 
     # Donut
     donut_segments = []
@@ -392,7 +241,7 @@ def generate_html(scan_dirs):
             sev_badge = f'<span class="chip" style="background:{SEV_COLORS.get(f["severity"],"#6c757d")};color:#fff;font-size:10px">{f["severity"].upper()}</span>'
             url = _github_url(f.get("file", ""), f.get("line_start", 0), 0, repo_full, commit_ref or branch_ref)
             display = _file_display(f.get("file", ""), f.get("line_start", 0))
-            link = f'<a href="{url}" class="file-link" target="_blank">{escape(display)}</a>' if url else f'<code>{escape(display)}</code>'
+            link = f'<a href="{escape(url) if url else ""}" class="file-link" target="_blank">{escape(display)}</a>' if url else f'<code>{escape(display)}</code>'
             sca_rows.append(f'<tr><td>{sev_badge}</td><td>{escape(f.get("source",""))}</td><td>{link}</td><td>{escape(f.get("title","")[:60])}</td><td>{escape(f.get("recommendation","")[:80])}</td></tr>')
         sca_section = f'''<h3 style="color:#f0f6fc;margin-bottom:12px">Dependency Vulnerabilities ({len(sca_findings)} CVEs)</h3>
     <table><thead><tr><th>Severity</th><th>Tool</th><th>File</th><th>Title</th><th>Fix</th></tr></thead>
@@ -518,9 +367,11 @@ code {{ background:#21262d; padding:1px 5px; border-radius:3px; font-size:11px; 
 </div>
 
 <div style="display:flex;gap:16px;flex-wrap:wrap;font-size:11px;color:#8b949e;margin:8px 0 4px;padding:6px 0;border-bottom:1px solid #21262d">
-    <span><span class="chip" style="background:#16a34a">CORR</span> Corroborated: found by both SAST tools and AI review</span>
-    <span><span class="chip" style="background:#2563eb">AI</span> AI-only: logic/semantic issue found by AI review only</span>
-    <span style="color:#4a5568">No badge = SAST tool finding only</span>
+    <span><span class="chip" style="background:#16a34a">CORR</span> Corroborated: found by both SAST and AI</span>
+    <span><span class="chip" style="background:#2563eb">AI</span> AI-only finding</span>
+    <span><span class="chip" style="background:#166534;font-size:9px">HIGH conf</span> Code-verified</span>
+    <span><span class="chip" style="background:#854d0e;font-size:9px">MED conf</span> Plausible</span>
+    <span><span class="chip" style="background:#991b1b;font-size:9px">LOW conf</span> Speculative</span>
 </div>
 
 <div class="tabs">

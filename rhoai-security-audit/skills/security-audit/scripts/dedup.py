@@ -38,6 +38,43 @@ def merge_findings(primary, duplicate):
     return merged
 
 
+def deduplicate(findings):
+    """Deduplicate findings by grouping on file path first (O(n*k) instead of O(n^2))."""
+    from collections import defaultdict
+
+    by_file = defaultdict(list)
+    no_file = []
+    for i, f in enumerate(findings):
+        fpath = f.get("file", "")
+        if fpath:
+            by_file[fpath].append((i, f))
+        else:
+            no_file.append((i, f))
+
+    merged = []
+    used = set()
+
+    for fpath, group in by_file.items():
+        for idx_a, (i, a) in enumerate(group):
+            if i in used:
+                continue
+            current = dict(a)
+            for j, b in group[idx_a + 1:]:
+                if j in used:
+                    continue
+                if (lines_overlap(current, b)
+                    and categories_compatible(current.get("category", ""), b.get("category", ""))):
+                    current = merge_findings(current, b)
+                    used.add(j)
+            merged.append(current)
+
+    for i, f in no_file:
+        if i not in used:
+            merged.append(dict(f))
+
+    return merged
+
+
 def main():
     if len(sys.argv) < 2:
         print("Usage: dedup.py <normalized-findings.json>", file=sys.stderr)
@@ -46,25 +83,7 @@ def main():
     with open(sys.argv[1]) as f:
         findings = json.load(f)
 
-    merged = []
-    used = set()
-
-    for i, a in enumerate(findings):
-        if i in used:
-            continue
-        current = dict(a)
-        for j, b in enumerate(findings):
-            if j <= i or j in used:
-                continue
-            if (a.get("file") == b.get("file")
-                and a.get("file")
-                and lines_overlap(a, b)
-                and categories_compatible(a.get("category", ""), b.get("category", ""))):
-                current = merge_findings(current, b)
-                used.add(j)
-        merged.append(current)
-
-    json.dump(merged, sys.stdout, indent=2)
+    json.dump(deduplicate(findings), sys.stdout, indent=2)
 
 
 if __name__ == "__main__":

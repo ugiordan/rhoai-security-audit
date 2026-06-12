@@ -40,8 +40,15 @@ mkdir -p "${OUTDIR}"
 
 echo "=== Scanning ${REPO} ==="
 
-# Clone
-if ! git clone --depth 1 "https://github.com/${REPO}.git" "${WORKDIR}" 2>/dev/null; then
+# Clone (use SCAN_BRANCH env var if set, otherwise default branch)
+BRANCH_FLAG=""
+if [ -n "${SCAN_BRANCH:-}" ]; then
+  BRANCH_FLAG="--branch ${SCAN_BRANCH}"
+fi
+if [ -d "${WORKDIR}" ]; then
+  rm -rf "${WORKDIR}"
+fi
+if ! git clone --depth 1 ${BRANCH_FLAG} "https://github.com/${REPO}.git" "${WORKDIR}" 2>/dev/null; then
   echo "ERROR: Failed to clone ${REPO}"
   echo '{"repo":"'"${REPO}"'","error":"clone failed"}' > "${OUTDIR}/security-summary.json"
   exit 1

@@ -15,52 +15,7 @@ import sys
 from collections import Counter, defaultdict
 from pathlib import Path
 
-
-def load_findings(scan_dir):
-    p = Path(scan_dir)
-    triaged = p / "triaged-findings.json"
-    if triaged.exists():
-        return json.loads(triaged.read_text())
-    for name in ["deduplicated-findings.json", "normalized-findings.json"]:
-        f = p / name
-        if f.exists():
-            return json.loads(f.read_text())
-    return []
-
-
-def load_metadata(scan_dir):
-    f = Path(scan_dir) / "scan-metadata.json"
-    if f.exists():
-        return json.loads(f.read_text())
-    return {}
-
-
-_CONTAINER_PATH_RE_RPT = __import__("re").compile(r"^/tmp/scan-[^/]+/")
-
-
-def shorten_path(filepath, repo_name=""):
-    filepath = filepath.replace("\\", "/")
-    filepath = _CONTAINER_PATH_RE_RPT.sub("", filepath)
-    filepath = filepath.lstrip("/")
-    parts = filepath.split("/")
-    if repo_name:
-        short = repo_name.split("/")[-1] if "/" in repo_name else repo_name
-        if parts and parts[0] == short:
-            filepath = "/".join(parts[1:])
-        elif parts and parts[0] == f"scan-{short}":
-            filepath = "/".join(parts[1:])
-    return filepath
-
-
-def github_link(filepath, repo_full, branch="main", line=None):
-    """Return a markdown link to the file on GitHub."""
-    clean = shorten_path(filepath, repo_full)
-    if not clean:
-        return filepath
-    url = f"https://github.com/{repo_full}/blob/{branch}/{clean}"
-    if line and line > 0:
-        url += f"#L{line}"
-    return f"[{clean}]({url})"
+from report_common import load_findings, load_metadata, shorten_path, github_link_md as github_link
 
 
 def _severity_badge(sev):
