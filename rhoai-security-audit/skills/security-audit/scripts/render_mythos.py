@@ -534,7 +534,7 @@ def generate_mkdocs_site(mythos_dir, output_dir):
 
     yml = f"""site_name: "RHOAI Security Audit"
 use_directory_urls: false
-copyright: "CONFIDENTIAL — Do not share outside authorized personnel"
+copyright: "CONFIDENTIAL — Red Hat, Inc. — Do not share outside authorized personnel"
 
 theme:
   name: material
@@ -585,6 +585,9 @@ markdown_extensions:
 extra_css:
   - custom.css
 
+extra_javascript:
+  - footer-fix.js
+
 nav:
   - Overview: index.md
   - Components:
@@ -593,35 +596,67 @@ nav:
     (out / "mkdocs.yml").write_text(yml)
 
     css = """\
-/* Footer pinned to viewport bottom */
-.md-footer {
-  position: fixed !important;
-  bottom: 0;
-  left: 0;
-  right: 0;
-  z-index: 4;
+/* Body and container fill viewport, push footer to bottom */
+body {
+  display: flex !important;
+  flex-direction: column !important;
+  min-height: 100vh !important;
 }
-/* Sidebar stops before footer: header ~3rem + footer ~2.5rem */
-.md-sidebar {
-  z-index: 3 !important;
-  height: calc(100vh - 5.5rem) !important;
+.md-header { flex-shrink: 0 !important; }
+.md-container {
+  display: flex !important;
+  flex-direction: column !important;
+  flex: 1 !important;
 }
-.md-sidebar__scrollwrap {
-  max-height: calc(100vh - 5.5rem) !important;
-  overflow-y: auto !important;
-}
-.md-sidebar__inner {
-  height: calc(100vh - 5.5rem) !important;
-}
-/* Content and main area stop before footer */
-.md-main {
-  margin-bottom: 3rem;
-}
-.md-content {
-  padding-bottom: 3rem;
-}
+.md-tabs { flex-shrink: 0 !important; }
+.md-main { flex: 1 !important; }
+.md-footer { flex-shrink: 0 !important; }
+
+/* Reduce footer padding */
+.md-footer-meta { padding: 0.2rem 0 !important; }
+.md-footer-meta__inner { padding: 0.1rem !important; }
+
+/* Reduce sidebar bottom gap */
+.md-sidebar { padding-bottom: 0.4rem !important; }
+
+/* Hide "Made with Material for MkDocs" */
+.md-copyright { font-size: 0 !important; line-height: 0 !important; }
+.md-copyright__highlight { font-size: 0.64rem !important; line-height: 1.4 !important; }
+.md-copyright a { display: none !important; }
 """
     (docs_dir / "custom.css").write_text(css)
+
+    js = """\
+// Ensure footer stays at viewport bottom after Material's JS runs
+document.addEventListener('DOMContentLoaded', function() {
+  var footer = document.querySelector('.md-footer');
+  if (!footer) return;
+  function fixFooter() {
+    var body = document.body;
+    var docHeight = body.scrollHeight;
+    var winHeight = window.innerHeight;
+    if (docHeight <= winHeight) {
+      footer.style.position = 'fixed';
+      footer.style.bottom = '0';
+      footer.style.left = '0';
+      footer.style.right = '0';
+      footer.style.zIndex = '4';
+      body.style.paddingBottom = (footer.offsetHeight + 4) + 'px';
+    } else {
+      footer.style.position = '';
+      footer.style.bottom = '';
+      footer.style.left = '';
+      footer.style.right = '';
+      footer.style.zIndex = '';
+      body.style.paddingBottom = '';
+    }
+  }
+  fixFooter();
+  window.addEventListener('resize', fixFooter);
+  new MutationObserver(fixFooter).observe(document.body, {childList: true, subtree: true});
+});
+"""
+    (docs_dir / "footer-fix.js").write_text(js)
 
     # Build
     try:
