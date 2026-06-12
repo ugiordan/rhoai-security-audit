@@ -424,14 +424,242 @@ function showTab(name) {{
     print(f"Findings: {total_findings}")
 
 
+def generate_mkdocs_site(mythos_dir, output_dir):
+    """Generate a MkDocs Material site with per-component pages."""
+    import shutil
+    import subprocess
+
+    base = Path(mythos_dir)
+    reports = sorted(base.rglob("*-security-audit.md"))
+    if not reports:
+        print("No Mythos reports found.", file=sys.stderr)
+        sys.exit(1)
+
+    components = []
+    for rpath in reports:
+        comp = parse_component(rpath)
+        components.append(comp)
+
+    components.sort(key=lambda c: (
+        -c["sev_counts"]["critical"],
+        -c["sev_counts"]["high"],
+        -c["total"],
+    ))
+
+    out = Path(output_dir)
+    docs_dir = out / "docs"
+    docs_dir.mkdir(parents=True, exist_ok=True)
+
+    total_findings = sum(c["total"] for c in components)
+    comps_with = [c for c in components if c["total"] > 0]
+    comps_empty = [c for c in components if c["total"] == 0]
+
+    # Index page
+    index = "# RHOAI Security Audit\n\n"
+    index += "> **CONFIDENTIAL** — Do not share outside authorized personnel.\n\n"
+    index += f"**{total_findings} findings** across **{len(comps_with)} components** ({len(comps_empty)} clean)\n\n"
+    index += "| Component | Critical | High | Medium | Low | Info | Total |\n"
+    index += "|-----------|----------|------|--------|-----|------|-------|\n"
+    for c in components:
+        s = c["sev_counts"]
+        crit_mark = f"**{s['critical']}**" if s["critical"] else "0"
+        high_mark = f"**{s['high']}**" if s["high"] else "0"
+        total_mark = f"**{c['total']}**" if c["total"] else "0"
+        index += (f"| [{c['name']}](components/{c['name']}.md) | {crit_mark} | {high_mark} | "
+                  f"{s['medium']} | {s['low']} | {s['info']} | {total_mark} |\n")
+    (docs_dir / "index.md").write_text(index)
+
+    # Per-component pages (ALL components, including empty)
+    comp_dir = docs_dir / "components"
+    comp_dir.mkdir(exist_ok=True)
+
+    for c in components:
+        if c["total"] == 0:
+            md = f"# {c['name']}\n\n"
+            md += "!!! success \"No findings\"\n    No security findings identified for this component.\n"
+            if c["repo"]:
+                md += f"\n**Repository:** {c['repo']}\n"
+            (comp_dir / f"{c['name']}.md").write_text(md)
+            continue
+
+        c_with_findings = c
+        c = c_with_findings
+        s = c["sev_counts"]
+        sev_line = " · ".join(
+            f"**{s[sv]} {sv.title()}**" for sv in ["critical", "high", "medium", "low", "info"]
+            if s[sv] > 0
+        )
+
+        md = f"# {c['name']}\n\n"
+        md += f"{sev_line} · {c['total']} findings\n\n"
+        if c["repo"]:
+            md += f"**Repository:** {c['repo']}\n\n"
+
+        for f in c["findings"]:
+            sev = f["severity"]
+            admon = {"critical": "danger", "high": "warning", "medium": "note",
+                     "low": "info", "informational": "tip", "info": "tip"}.get(sev, "note")
+            cvss_text = f" (CVSS {f['cvss']})" if f["cvss"] else ""
+
+            md += f'??? {admon} "{f["id"]} — {escape(f["title"][:100])}{cvss_text}"\n\n'
+
+            # Re-render finding body preserving original content
+            body_lines = f["html"].replace("<h4>", "\n    **").replace("</h4>", "**\n")
+            body_lines = re.sub(r'<pre class="code-block"><code[^>]*>(.*?)</code></pre>',
+                                lambda m: "\n    ```\n    " + m.group(1).replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&").replace("\n", "\n    ") + "\n    ```\n",
+                                body_lines, flags=re.DOTALL)
+            body_lines = re.sub(r'<table[^>]*>.*?</table>', '', body_lines, flags=re.DOTALL)
+            body_lines = re.sub(r'<p>(.*?)</p>', r'\1', body_lines)
+            body_lines = re.sub(r'<li>(.*?)</li>', r'- \1', body_lines)
+            body_lines = re.sub(r'<strong>(.*?)</strong>', r'**\1**', body_lines)
+            body_lines = re.sub(r'<em>(.*?)</em>', r'*\1*', body_lines)
+            body_lines = re.sub(r'<code>(.*?)</code>', r'`\1`', body_lines)
+            body_lines = re.sub(r'<[^>]+>', '', body_lines)
+
+            for line in body_lines.split("\n"):
+                stripped = line.strip()
+                if stripped:
+                    md += f"    {stripped}\n"
+                else:
+                    md += "\n"
+            md += "\n"
+
+        (comp_dir / f"{c['name']}.md").write_text(md)
+
+    # Nav entries (all components)
+    nav_comps = "\n".join(
+        f"      - {c['name']}: components/{c['name']}.md"
+        for c in components
+    )
+
+    yml = f"""site_name: "RHOAI Security Audit"
+use_directory_urls: false
+copyright: "CONFIDENTIAL — Do not share outside authorized personnel"
+
+theme:
+  name: material
+  language: en
+  icon:
+    logo: material/shield-lock
+  font:
+    text: Red Hat Text
+    code: Red Hat Mono
+  palette:
+    - scheme: default
+      primary: black
+      toggle:
+        icon: material/brightness-4
+        name: Switch to dark mode
+    - scheme: slate
+      primary: black
+      toggle:
+        icon: material/brightness-7
+        name: Switch to light mode
+  features:
+    - navigation.tabs
+    - navigation.top
+    - navigation.indexes
+    - navigation.path
+    - navigation.expand
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - toc.follow
+
+plugins:
+  - search
+
+markdown_extensions:
+  - admonition
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.inlinehilite
+  - attr_list
+  - md_in_html
+  - tables
+  - toc:
+      permalink: true
+
+extra_css:
+  - custom.css
+
+nav:
+  - Overview: index.md
+  - Components:
+{nav_comps}
+"""
+    (out / "mkdocs.yml").write_text(yml)
+
+    css = """\
+/* Footer pinned to viewport bottom */
+.md-footer {
+  position: fixed !important;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 4;
+}
+/* Sidebar stops before footer: header ~3rem + footer ~2.5rem */
+.md-sidebar {
+  z-index: 3 !important;
+  height: calc(100vh - 5.5rem) !important;
+}
+.md-sidebar__scrollwrap {
+  max-height: calc(100vh - 5.5rem) !important;
+  overflow-y: auto !important;
+}
+.md-sidebar__inner {
+  height: calc(100vh - 5.5rem) !important;
+}
+/* Content and main area stop before footer */
+.md-main {
+  margin-bottom: 3rem;
+}
+.md-content {
+  padding-bottom: 3rem;
+}
+"""
+    (docs_dir / "custom.css").write_text(css)
+
+    # Build
+    try:
+        result = subprocess.run(
+            ["mkdocs", "build", "--config-file", str(out / "mkdocs.yml"),
+             "--site-dir", str(out / "site")],
+            capture_output=True, text=True, timeout=60,
+        )
+        if result.returncode != 0:
+            subprocess.run(
+                ["mkdocs", "build", "--config-file", str(out / "mkdocs.yml"),
+                 "--site-dir", str(out / "site")],
+                capture_output=True, text=True, timeout=60,
+            )
+
+        # Zip
+        site_dir = out / "site"
+        if site_dir.exists():
+            shutil.make_archive(str(out / "mythos-report-site"), "zip", str(site_dir))
+            print(f"MkDocs site: {site_dir / 'index.html'}")
+            print(f"Zip: {out / 'mythos-report-site.zip'}")
+    except FileNotFoundError:
+        print("mkdocs not found. Install: pip install mkdocs-material", file=sys.stderr)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("mythos_dir")
     parser.add_argument("-o", "--output", default=None)
+    parser.add_argument("--mkdocs", action="store_true", help="Generate MkDocs site with per-component pages")
     args = parser.parse_args()
 
-    output = args.output or str(Path(args.mythos_dir) / "mythos-report.html")
-    generate_report(args.mythos_dir, output)
+    if args.mkdocs:
+        output = args.output or str(Path(args.mythos_dir) / "mkdocs-report")
+        generate_mkdocs_site(args.mythos_dir, output)
+    else:
+        output = args.output or str(Path(args.mythos_dir) / "mythos-report.html")
+        generate_report(args.mythos_dir, output)
 
 
 if __name__ == "__main__":
