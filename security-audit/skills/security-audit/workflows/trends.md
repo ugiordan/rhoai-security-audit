@@ -5,7 +5,7 @@ Show security finding trends across previous scan runs.
 ## Usage
 
 ```
-/rhoai-security-audit:security-audit trends [--repo <name>] [--last <n>] [--output <dir>]
+/security-audit:security-audit trends [--repo <name>] [--last <n>] [--output <dir>]
 ```
 
 ## Steps

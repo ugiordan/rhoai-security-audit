@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build the scanner container image with tuned configs from rhoai-security-scanner.
+# Build the scanner container image with tuned configs from security-scanner.
 #
 # Usage:
 #   ./build-scanner.sh                    # Build on OCP
@@ -8,7 +8,7 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-SCANNER_REPO="${SCANNER_REPO:-$(dirname "$SCRIPT_DIR")/../rhoai-security-scanner}"
+SCANNER_REPO="${SCANNER_REPO:-$(dirname "$SCRIPT_DIR")/../security-scanner}"
 BUILD_DIR=$(mktemp -d)
 
 echo "Assembling build context..."

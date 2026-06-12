@@ -163,7 +163,7 @@ AI_SKILLS = [
     },
     {
         "name": "semantic-scan",
-        "skill": "rhoai-security-scanner:audit",
+        "skill": "semantic-scan:audit",
         "verify_glob": "**/*security-report*.md",
         "output_dir": "semantic-scan",
     },
@@ -418,7 +418,7 @@ def step_ai_skills(repo, output_dir, session_file, sandbox=True, no_cache=False,
 
 
 def _setup_scanner_workspace(repo):
-    """Create workspace for rhoai-security-scanner since its hooks don't fire in pipeline mode."""
+    """Create workspace for semantic-scan since its hooks don't fire in pipeline mode."""
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%d-%H%M%S")
     workspace = Path(f".security-scan/security-scan-{timestamp}")
     workspace.mkdir(parents=True, exist_ok=True)
@@ -457,7 +457,7 @@ def _find_adversarial_skill_dir():
     plugin_cache = Path.home() / ".claude" / "plugins" / "cache"
     for pattern in [
         "ugiordan-adversarial-reviewing/adversarial-reviewing/*/skills/adversarial-reviewing",
-        "ugiordan-rhoai-security-audit/adversarial-reviewing/*/skills/adversarial-reviewing",
+        "ugiordan-security-audit/adversarial-reviewing/*/skills/adversarial-reviewing",
     ]:
         import glob
         matches = glob.glob(str(plugin_cache / pattern))

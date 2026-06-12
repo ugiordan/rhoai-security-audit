@@ -1,4 +1,4 @@
-# Grype configuration for rhoai-security-scanner
+# Grype configuration for security-scanner
 # Reduces false positives from CPE-based matching and non-actionable findings.
 
 check-for-app-update: false

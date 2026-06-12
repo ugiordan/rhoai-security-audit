@@ -14,7 +14,7 @@ skills:
     description: "Multi-agent code review: 5 specialists (SEC, PERF, QUAL, CORR, ARCH) + red team debate"
     output_pattern: "/tmp/adversarial-review-cache-*/dispatch/*/output.md"
 
-  - skill: "rhoai-security-scanner:audit"
+  - skill: "security-scanner:audit"
     name: "semantic-scan"
     description: "3-agent semantic security analysis (repo-analyst, security-scanner, post-scan-agent)"
-    output_pattern: "/tmp/*rhoai-security-scanner*/*.json"
+    output_pattern: "/tmp/*security-scanner*/*.json"

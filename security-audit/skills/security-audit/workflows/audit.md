@@ -10,7 +10,7 @@ Audit Progress:
 - [ ] Step 2: Run SAST + AI skills IN PARALLEL
       - [ ] 2a: SAST tools in container (background)
       - [ ] 2b: adversarial-reviewing
-      - [ ] 2c: semantic-scan (rhoai-security-scanner)
+      - [ ] 2c: semantic-scan (security-scanner)
 - [ ] Step 3: Collect parallel results
 - [ ] Step 4: Normalize outputs
 - [ ] Step 5: Deduplicate findings

@@ -5,7 +5,7 @@ Generate consolidated security reports from existing scan data.
 ## Usage
 
 ```
-/rhoai-security-audit:security-audit report [--repo <name>] [--full] [--format md|docx] [--date <YYYY-MM-DD>]
+/security-audit:security-audit report [--repo <name>] [--full] [--format md|docx] [--date <YYYY-MM-DD>]
 ```
 
 ## Steps
